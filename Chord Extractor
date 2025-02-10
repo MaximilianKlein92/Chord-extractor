@@ -1,2439 +1,842 @@
-{
- "cells": [
-  {
-   "cell_type": "code",
-   "execution_count": null,
-   "id": "0c1304aa-5028-42e0-b51e-2691388839de",
-   "metadata": {},
-   "outputs": [],
-   "source": []
-  },
-  {
-   "cell_type": "code",
-   "execution_count": 1,
-   "id": "d24dd231-c429-4294-9ca1-d41e4c42a685",
-   "metadata": {},
-   "outputs": [
-    {
-     "name": "stderr",
-     "output_type": "stream",
-     "text": [
-      "<frozen importlib._bootstrap>:488: RuntimeWarning: Your system is avx2 capable but pygame was not built with support for it. The performance of some of your blits could be adversely affected. Consider enabling compile time detection with environment variables like PYGAME_DETECT_AVX2=1 if you are compiling without cross compilation.\n"
-     ]
-    },
-    {
-     "name": "stdout",
-     "output_type": "stream",
-     "text": [
-      "pygame 2.6.1 (SDL 2.30.10, Python 3.12.3)\n",
-      "Hello from the pygame community. https://www.pygame.org/contribute.html\n"
-     ]
+import os
+import sys
+import time
+import subprocess
+import threading
+import json
+import uuid
+import tempfile
+import numpy as np
+import soundfile as sf
+import librosa
+import pygame
+import tkinter as tk
+from tkinter.filedialog import askopenfilename
+
+# Pfad zu ffmpeg (bitte anpassen!)
+FFMPEG_PATH = r'C:\Users\abcde\Downloads\ffmpeg-7.1-full_build\ffmpeg-7.1-full_build\bin\ffmpeg.exe'
+DB_FILE = "songs_db.json"
+temp_speed_files = []
+
+# ---------------------------
+# Datenbankfunktionen
+# ---------------------------
+def load_database():
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
+
+def save_database(db):
+    with open(DB_FILE, 'w', encoding='utf-8') as f:
+        json.dump(db, f, indent=2)
+
+# ---------------------------
+# Funktionen zum Speichern/Laden der Chordliste
+# ---------------------------
+def save_chords_to_file(chords, filename):
+    with open(filename, 'w', encoding='utf-8') as f:
+        for t, ch in chords:
+            f.write(f"{t}\t{ch}\n")
+    print(f"Chords saved to {filename}")
+    sys.stdout.flush()
+
+def load_chords_from_file(filename):
+    chords = []
+    with open(filename, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                parts = line.split('\t')
+                if len(parts) >= 2:
+                    try:
+                        t = float(parts[0])
+                        ch = parts[1]
+                        chords.append((t, ch))
+                    except Exception as e:
+                        print("Error parsing line:", line, e)
+    print(f"Chords loaded from {filename}")
+    sys.stdout.flush()
+    return chords
+
+# ---------------------------
+# Audioverarbeitung und Akkorderkennung
+# ---------------------------
+def convert_mp3_to_wav(file_path):
+    if file_path.lower().endswith('.mp3'):
+        abs_file_path = os.path.abspath(file_path)
+        wav_path = os.path.splitext(abs_file_path)[0] + ".wav"
+        if not os.path.exists(abs_file_path):
+            raise FileNotFoundError(f"File {abs_file_path} not found.")
+        subprocess.run([FFMPEG_PATH, '-i', abs_file_path, wav_path], check=True)
+        if not os.path.exists(wav_path):
+            raise FileNotFoundError(f"WAV file {wav_path} not created.")
+        return wav_path
+    return file_path
+
+def clean_path(file_path):
+    return file_path.strip('"')
+
+def detect_chord(chroma_column):
+    if len(chroma_column) != 12:
+        chroma_column = np.resize(chroma_column, (12,))
+    chord_templates = {
+        '':   np.array([1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0]),
+        'm':   np.array([1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0]),
+        'sus2':  np.array([1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]),
+        'sus4':  np.array([1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0]),
+        '7':     np.array([1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0]),
+        'maj7':  np.array([1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1]),
+        'm7':  np.array([1, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0]),
+        '9':     np.array([1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1])
     }
-   ],
-   "source": [
-    "import os\n",
-    "import sys\n",
-    "import time\n",
-    "import subprocess\n",
-    "import threading\n",
-    "import json\n",
-    "import uuid\n",
-    "import tempfile\n",
-    "import numpy as np\n",
-    "import soundfile as sf\n",
-    "import librosa\n",
-    "import pygame\n",
-    "import tkinter as tk\n",
-    "from tkinter.filedialog import askopenfilename\n",
-    "\n",
-    "# Pfad zu ffmpeg (bitte anpassen!)\n",
-    "FFMPEG_PATH = r'C:/Users/abcde/Downloads/ffmpeg-7.1-full_build/ffmpeg-7.1-full_build/bin/ffmpeg.exe'\n",
-    "DB_FILE = \"songs_db.json\"\n",
-    "temp_speed_files = []\n",
-    "\n",
-    "# --- Datenbankfunktionen ---\n",
-    "def load_database():\n",
-    "    if os.path.exists(DB_FILE):\n",
-    "        with open(DB_FILE, 'r', encoding='utf-8') as f:\n",
-    "            return json.load(f)\n",
-    "    return {}\n",
-    "\n",
-    "def save_database(db):\n",
-    "    with open(DB_FILE, 'w', encoding='utf-8') as f:\n",
-    "        json.dump(db, f, indent=2)\n",
-    "\n",
-    "# --- Funktionen zum Speichern/Laden der Chordliste ---\n",
-    "def save_chords_to_file(chords, filename):\n",
-    "    with open(filename, 'w', encoding='utf-8') as f:\n",
-    "        for t, ch in chords:\n",
-    "            f.write(f\"{t}\\t{ch}\\n\")\n",
-    "    print(f\"Chords saved to {filename}\")\n",
-    "    sys.stdout.flush()\n",
-    "\n",
-    "def load_chords_from_file(filename):\n",
-    "    chords = []\n",
-    "    with open(filename, 'r', encoding='utf-8') as f:\n",
-    "        for line in f:\n",
-    "            line = line.strip()\n",
-    "            if line:\n",
-    "                parts = line.split('\\t')\n",
-    "                if len(parts) >= 2:\n",
-    "                    try:\n",
-    "                        t = float(parts[0])\n",
-    "                        ch = parts[1]\n",
-    "                        chords.append((t, ch))\n",
-    "                    except Exception as e:\n",
-    "                        print(\"Error parsing line:\", line, e)\n",
-    "    print(f\"Chords loaded from {filename}\")\n",
-    "    sys.stdout.flush()\n",
-    "    return chords\n",
-    "\n",
-    "# --- Audioverarbeitung und Akkorderkennung ---\n",
-    "def convert_mp3_to_wav(file_path):\n",
-    "    if file_path.lower().endswith('.mp3'):\n",
-    "        abs_file_path = os.path.abspath(file_path)\n",
-    "        wav_path = os.path.splitext(abs_file_path)[0] + \".wav\"\n",
-    "        if not os.path.exists(abs_file_path):\n",
-    "            raise FileNotFoundError(f\"File {abs_file_path} not found.\")\n",
-    "        subprocess.run([FFMPEG_PATH, '-i', abs_file_path, wav_path], check=True)\n",
-    "        if not os.path.exists(wav_path):\n",
-    "            raise FileNotFoundError(f\"WAV file {wav_path} not created.\")\n",
-    "        return wav_path\n",
-    "    return file_path\n",
-    "\n",
-    "def clean_path(file_path):\n",
-    "    return file_path.strip('\"')\n",
-    "\n",
-    "def detect_chord(chroma_column):\n",
-    "    if len(chroma_column) != 12:\n",
-    "        chroma_column = np.resize(chroma_column, (12,))\n",
-    "    \n",
-    "    chord_templates = {\n",
-    "        '':   np.array([1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0]),\n",
-    "        'm':   np.array([1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0]),\n",
-    "        'sus2':  np.array([1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]),\n",
-    "        'sus4':  np.array([1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0]),\n",
-    "        '7':     np.array([1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0]),\n",
-    "        'maj7':  np.array([1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1]),\n",
-    "        'm7':  np.array([1, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0]),\n",
-    "        '9':     np.array([1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1])\n",
-    "    }\n",
-    "    \n",
-    "    chord_labels = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']\n",
-    "    best_score = -np.inf\n",
-    "    best_chord = \"N.C.\"\n",
-    "    \n",
-    "    norm = np.linalg.norm(chroma_column)\n",
-    "    chroma_norm = chroma_column / norm if norm > 0 else chroma_column\n",
-    "    \n",
-    "    for i in range(12):\n",
-    "        for quality, template in chord_templates.items():\n",
-    "            template_rotated = np.roll(template, i)\n",
-    "            t_norm = np.linalg.norm(template_rotated)\n",
-    "            template_norm = template_rotated / t_norm if t_norm > 0 else template_rotated\n",
-    "            score = np.dot(chroma_norm, template_norm)\n",
-    "            if score > best_score:\n",
-    "                best_score = score\n",
-    "                best_chord = chord_labels[i] + quality\n",
-    "    return best_chord\n",
-    "\n",
-    "def extract_chords(file_path, beat_sync=False, hop_length=512):\n",
-    "    file_path = clean_path(file_path)\n",
-    "    file_path = convert_mp3_to_wav(file_path)\n",
-    "    abs_file_path = os.path.abspath(file_path)\n",
-    "    if not os.path.exists(abs_file_path):\n",
-    "        raise FileNotFoundError(f\"File {abs_file_path} not found.\")\n",
-    "    y, sr = sf.read(abs_file_path)\n",
-    "    y = y[:, 0] if y.ndim > 1 else y\n",
-    "    y_harmonic, y_percussive = librosa.effects.hpss(y)\n",
-    "    chromagram = librosa.feature.chroma_cqt(y=y_harmonic, sr=sr, hop_length=hop_length, n_chroma=12)\n",
-    "    if beat_sync:\n",
-    "        tempo, beats = librosa.beat.beat_track(y=y_percussive, sr=sr, hop_length=hop_length)\n",
-    "        chroma_sync = librosa.util.sync(chromagram, beats, aggregate=np.mean)\n",
-    "        print(\"Chroma_sync shape before check:\", chroma_sync.shape)\n",
-    "        sys.stdout.flush()\n",
-    "        if chroma_sync.shape[0] > 12:\n",
-    "            chroma_sync = chroma_sync[:12, :]\n",
-    "        elif chroma_sync.shape[0] < 12:\n",
-    "            pad_width = 12 - chroma_sync.shape[0]\n",
-    "            chroma_sync = np.pad(chroma_sync, ((0, pad_width), (0, 0)), mode='constant')\n",
-    "        print(\"Chroma_sync shape after check:\", chroma_sync.shape)\n",
-    "        sys.stdout.flush()\n",
-    "        times = librosa.frames_to_time(beats[:-1], sr=sr, hop_length=hop_length)\n",
-    "    else:\n",
-    "        chroma_sync = chromagram\n",
-    "        times = librosa.frames_to_time(np.arange(chromagram.shape[1]), sr=sr, hop_length=hop_length)\n",
-    "    chord_sequence = [detect_chord(np.resize(chroma_sync[:, i], (12,))) for i in range(chroma_sync.shape[1])]\n",
-    "    simplified_chords = []\n",
-    "    timestamps = []\n",
-    "    prev_chord = None\n",
-    "    for i, chord in enumerate(chord_sequence):\n",
-    "        if chord != prev_chord:\n",
-    "            simplified_chords.append(chord)\n",
-    "            if i < len(times):\n",
-    "                timestamps.append(times[i])\n",
-    "            prev_chord = chord\n",
-    "    print(\"Extraction finished. Number of chords found:\", len(simplified_chords))\n",
-    "    sys.stdout.flush()\n",
-    "    return list(zip(timestamps, simplified_chords))\n",
-    "\n",
-    "def change_playback_speed(audio_file, speed, start_offset):\n",
-    "    duration = get_song_duration(audio_file)\n",
-    "    # Falls der Startoffset über der Dauer liegt, setze ihn auf kurz vor Ende\n",
-    "    if start_offset >= duration:\n",
-    "        start_offset = max(0, duration - 0.1)  # 0.1 Sekunde vor dem Ende\n",
-    "    temp_file = 'temp_speed_changed.wav'\n",
-    "    if pygame.mixer.music.get_busy():\n",
-    "        pygame.mixer.music.stop()\n",
-    "        pygame.mixer.music.unload()\n",
-    "    if os.path.exists(temp_file):\n",
-    "        os.remove(temp_file)\n",
-    "    subprocess.run([\n",
-    "        FFMPEG_PATH, '-y', '-ss', str(start_offset), '-i', audio_file,\n",
-    "        '-filter:a', f'atempo={speed}', '-vn', temp_file\n",
-    "    ], check=True)\n",
-    "    pygame.mixer.music.load(temp_file)\n",
-    "    pygame.mixer.music.play()\n",
-    "    temp_speed_files.append(temp_file)\n",
-    "\n",
-    "\n",
-    "# --- Angepasste Transpositionsfunktionen ---\n",
-    "# Hier wird das transponierte Audio in eine temporäre Datei im Systemtemp-Verzeichnis geschrieben.\n",
-    "def transpose_audio_file(song_path, n_steps):\n",
-    "    temp_file = os.path.join(tempfile.gettempdir(), \"temp_transposed.wav\")\n",
-    "    # Hier versuchen wir, die Datei zu löschen, falls sie existiert.\n",
-    "    if os.path.exists(temp_file):\n",
-    "        try:\n",
-    "            os.remove(temp_file)\n",
-    "        except PermissionError:\n",
-    "            # Falls die Datei in Benutzung ist, ignorieren wir den Fehler.\n",
-    "            pass\n",
-    "    y, sr = librosa.load(song_path, sr=None)\n",
-    "    y_transposed = librosa.effects.pitch_shift(y, sr=sr, n_steps=n_steps)\n",
-    "    sf.write(temp_file, y_transposed, sr)\n",
-    "    return temp_file\n",
-    "\n",
-    "def transpose_chord(chord, n_steps):\n",
-    "    chord_labels = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']\n",
-    "    if chord not in chord_labels:\n",
-    "        return chord\n",
-    "    idx = chord_labels.index(chord)\n",
-    "    new_idx = (idx + n_steps) % 12\n",
-    "    return chord_labels[new_idx]\n",
-    "\n",
-    "# --- Erweiterte Button-Klasse ---\n",
-    "class Button:\n",
-    "    def __init__(self, rect, color, text, text_color, action, max_width=None, initial_font_size=36):\n",
-    "        self.rect = pygame.Rect(rect)\n",
-    "        self.color = color\n",
-    "        self.text = text\n",
-    "        self.text_color = text_color\n",
-    "        self.action = action\n",
-    "        if max_width is not None:\n",
-    "            size = initial_font_size\n",
-    "            self.font = pygame.font.Font(None, size)\n",
-    "            while self.font.size(text)[0] > max_width and size > 10:\n",
-    "                size -= 1\n",
-    "                self.font = pygame.font.Font(None, size)\n",
-    "        else:\n",
-    "            self.font = pygame.font.Font(None, initial_font_size)\n",
-    "    def draw(self, surface):\n",
-    "        pygame.draw.rect(surface, self.color, self.rect)\n",
-    "        pygame.draw.rect(surface, (0,0,0), self.rect, 1)\n",
-    "        txt_surf = self.font.render(self.text, True, self.text_color)\n",
-    "        txt_rect = txt_surf.get_rect(center=self.rect.center)\n",
-    "        surface.blit(txt_surf, txt_rect)\n",
-    "    def is_clicked(self, pos):\n",
-    "        return self.rect.collidepoint(pos)\n",
-    "\n",
-    "# --- Datei-Auswahldialog (Tkinter) ---\n",
-    "def search_file():\n",
-    "    root = tk.Tk()\n",
-    "    root.withdraw()\n",
-    "    filename = askopenfilename(title=\"Select a file\", filetypes=[(\"Audio Files\", \"*.mp3 *.wav\")])\n",
-    "    root.destroy()\n",
-    "    return filename\n",
-    "\n",
-    "# --- Haupt-GUI ---\n",
-    "def player_mode_gui(chords, initial_song_path=None):\n",
-    "    pygame.init()\n",
-    "    pygame.event.set_allowed([pygame.QUIT, pygame.MOUSEBUTTONDOWN, pygame.DROPFILE,\n",
-    "                              pygame.MOUSEWHEEL, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION])\n",
-    "    WINDOW_WIDTH, WINDOW_HEIGHT = 1000, 600\n",
-    "    screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))\n",
-    "    pygame.display.set_caption(\"Player Mode\")\n",
-    "    clock = pygame.time.Clock()\n",
-    "\n",
-    "    db = load_database()\n",
-    "\n",
-    "    SONG_TITLE_HEIGHT = 40\n",
-    "    RIGHT_TOP_HEIGHT = 400\n",
-    "    CHORDS_HEIGHT = int(RIGHT_TOP_HEIGHT * 0.75) - SONG_TITLE_HEIGHT\n",
-    "    TIME_HEIGHT = RIGHT_TOP_HEIGHT - (CHORDS_HEIGHT + SONG_TITLE_HEIGHT)\n",
-    "    CONTROLS_HEIGHT = WINDOW_HEIGHT - RIGHT_TOP_HEIGHT\n",
-    "\n",
-    "    FILE_PANEL_WIDTH = 250\n",
-    "    RIGHT_WIDTH = WINDOW_WIDTH - FILE_PANEL_WIDTH\n",
-    "\n",
-    "    current_speed = 1.0\n",
-    "    song_offset = 0.0\n",
-    "    start_time = 0.0\n",
-    "    total_pause_duration = 0.0\n",
-    "    paused = False\n",
-    "    volume = 0.5\n",
-    "    hop_length = 512\n",
-    "\n",
-    "    # Variable für aktuell abgespielten (effektiven) Audiopfad\n",
-    "    current_effective_path = initial_song_path\n",
-    "\n",
-    "    # Transpositionsvariablen\n",
-    "    current_transposition = 0\n",
-    "    original_chords = []\n",
-    "\n",
-    "    pygame.mixer.init()\n",
-    "    pygame.mixer.music.set_volume(volume)\n",
-    "    current_song_path = initial_song_path\n",
-    "\n",
-    "    use_beat_sync = True\n",
-    "\n",
-    "    scroll_offset = 5\n",
-    "    margin_top = 0\n",
-    "    margin_bottom = 30\n",
-    "    file_list_area = pygame.Rect(0, 50 + margin_top, FILE_PANEL_WIDTH, WINDOW_HEIGHT - 50 - 80 - margin_bottom)\n",
-    "\n",
-    "    beat_toggle_rect = (10, 10, 30, 30)\n",
-    "    def toggle_beat_sync():\n",
-    "        nonlocal use_beat_sync, beat_toggle\n",
-    "        use_beat_sync = not use_beat_sync\n",
-    "        beat_toggle.text = \"X\" if use_beat_sync else \"\"\n",
-    "    beat_toggle = Button(beat_toggle_rect, (128, 128, 128), \"X\", (0, 0, 0), toggle_beat_sync)\n",
-    "    beat_label = Button((50, 10, 100, 30), (80, 80, 80), \"BeatSync\", (255, 255, 255), lambda: None)\n",
-    "    \n",
-    "    file_widgets = []\n",
-    "    def update_file_manager():\n",
-    "        nonlocal file_widgets, db, scroll_offset\n",
-    "        folder_files = [os.path.join(os.getcwd(), f) for f in os.listdir('.') if f.lower().endswith(('.mp3','.wav'))]\n",
-    "        db_files = list(db.keys())\n",
-    "        all_files = list(set(folder_files + db_files))\n",
-    "        all_files.sort()\n",
-    "        file_widgets.clear()\n",
-    "        for idx, file in enumerate(all_files):\n",
-    "            main_rect = (10, file_list_area.top + idx * 40 + scroll_offset, FILE_PANEL_WIDTH - 20 - 25, 30)\n",
-    "            delete_rect = (10 + (FILE_PANEL_WIDTH - 20 - 25), file_list_area.top + idx * 40 + scroll_offset, 25, 30)\n",
-    "            main_btn = Button(main_rect, (211, 211, 211), os.path.basename(file), (0, 0, 0),\n",
-    "                              lambda f=file: load_song(f),\n",
-    "                              max_width=FILE_PANEL_WIDTH - 20 - 25, initial_font_size=36)\n",
-    "            delete_btn = Button(delete_rect, (150, 0, 0), \"X\", (255, 255, 255),\n",
-    "                                lambda f=file: delete_file(f),\n",
-    "                                max_width=25, initial_font_size=24)\n",
-    "            file_widgets.append((main_btn, delete_btn))\n",
-    "    update_file_manager()\n",
-    "\n",
-    "    search_button_rect = (10, WINDOW_HEIGHT - 40, FILE_PANEL_WIDTH - 20, 30)\n",
-    "    search_button = Button(search_button_rect, (180, 211, 211), \"Search File\", (0, 0, 0),\n",
-    "                           lambda: load_song(search_file()),\n",
-    "                           max_width=FILE_PANEL_WIDTH - 20, initial_font_size=36)\n",
-    "    dd_field_rect = (10, WINDOW_HEIGHT - 80, FILE_PANEL_WIDTH - 20, 30)\n",
-    "    dd_field = Button(dd_field_rect, (100, 180, 180), \"Drag & Drop File\", (0, 0, 0),\n",
-    "                      lambda: None, max_width=FILE_PANEL_WIDTH - 20, initial_font_size=24)\n",
-    "\n",
-    "    def draw_file_manager_border(surface):\n",
-    "        pygame.draw.rect(surface, (0, 0, 0), file_list_area, 2)\n",
-    "\n",
-    "    def draw_song_title(surface):\n",
-    "        if current_song_path is not None:\n",
-    "            song_name = os.path.basename(current_song_path)\n",
-    "            title_text = \"Song: \" + song_name\n",
-    "            title_font = pygame.font.Font(None, 36)\n",
-    "            title_surf = title_font.render(title_text, True, (255, 255, 255))\n",
-    "            title_rect = title_surf.get_rect(midleft=(FILE_PANEL_WIDTH + 10, SONG_TITLE_HEIGHT // 2))\n",
-    "            surface.blit(title_surf, title_rect)\n",
-    "\n",
-    "    row1_y = RIGHT_TOP_HEIGHT + 20\n",
-    "    row2_y = RIGHT_TOP_HEIGHT + 100\n",
-    "    \n",
-    "    BUTTON_WIDTH1, BUTTON_HEIGHT1 = 130, 50\n",
-    "    gap1 = (RIGHT_WIDTH - 4 * BUTTON_WIDTH1) // 5\n",
-    "    row1_start_x = FILE_PANEL_WIDTH + gap1\n",
-    "    additional_controls = []\n",
-    "    additional_controls.append(Button((row1_start_x, row1_y, BUTTON_WIDTH1, BUTTON_HEIGHT1),\n",
-    "                                        (0, 200, 0), \"Play/Pause\", (0, 0, 0), lambda: toggle_pause()))\n",
-    "    additional_controls.append(Button((row1_start_x + BUTTON_WIDTH1 + gap1, row1_y, BUTTON_WIDTH1, BUTTON_HEIGHT1),\n",
-    "                                        (144, 238, 144), \"Faster\", (0, 0, 0), lambda: faster_action()))\n",
-    "    additional_controls.append(Button((row1_start_x + 2*(BUTTON_WIDTH1 + gap1), row1_y, BUTTON_WIDTH1, BUTTON_HEIGHT1),\n",
-    "                                        (173, 216, 230), \"Louder\", (0, 0, 0), lambda: louder_action()))\n",
-    "    additional_controls.append(Button((row1_start_x + 3*(BUTTON_WIDTH1 + gap1), row1_y, BUTTON_WIDTH1, BUTTON_HEIGHT1),\n",
-    "                                        (255, 200, 0), \"Forward\", (0, 0, 0), lambda: forward_action()))\n",
-    "    \n",
-    "    BUTTON_WIDTH2, BUTTON_HEIGHT2 = 130, 50\n",
-    "    gap2 = (RIGHT_WIDTH - 4 * BUTTON_WIDTH2) // 5\n",
-    "    row2_start_x = FILE_PANEL_WIDTH + gap2\n",
-    "    control_buttons = []\n",
-    "    control_buttons.append(Button((row2_start_x, row2_y, BUTTON_WIDTH2, BUTTON_HEIGHT2),\n",
-    "                                    (255, 0, 0), \"Exit\", (255, 255, 255), lambda: exit_action()))\n",
-    "    control_buttons.append(Button((row2_start_x + BUTTON_WIDTH2 + gap2, row2_y, BUTTON_WIDTH2, BUTTON_HEIGHT2),\n",
-    "                                    (0, 128, 0), \"Slower\", (255, 255, 255), lambda: slower_action()))\n",
-    "    control_buttons.append(Button((row2_start_x + 2*(BUTTON_WIDTH2 + gap2), row2_y, BUTTON_WIDTH2, BUTTON_HEIGHT2),\n",
-    "                                    (0, 0, 139), \"Quieter\", (255, 255, 255), lambda: quieter_action()))\n",
-    "    control_buttons.append(Button((row2_start_x + 3*(BUTTON_WIDTH2 + gap2), row2_y, BUTTON_WIDTH2, BUTTON_HEIGHT2),\n",
-    "                                    (255, 140, 0), \"Back\", (0, 0, 0), lambda: back_action()))\n",
-    "    \n",
-    "    # Neue Transpose-Buttons\n",
-    "    BUTTON_WIDTH_TRANS, BUTTON_HEIGHT_TRANS = 130, 50\n",
-    "    gap_trans = (RIGHT_WIDTH - 2 * BUTTON_WIDTH_TRANS) // 3\n",
-    "    trans_start_x = FILE_PANEL_WIDTH + gap_trans\n",
-    "    trans_y = RIGHT_TOP_HEIGHT + 160\n",
-    "    trans_up_btn = Button((trans_start_x, trans_y, BUTTON_WIDTH_TRANS, BUTTON_HEIGHT_TRANS),\n",
-    "                          (100, 149, 237), \"Transpose Up\", (255, 255, 255), lambda: transpose_up_action())\n",
-    "    trans_down_btn = Button((trans_start_x + BUTTON_WIDTH_TRANS + gap_trans, trans_y, BUTTON_WIDTH_TRANS, BUTTON_HEIGHT_TRANS),\n",
-    "                            (100, 149, 237), \"Transpose Down\", (255, 255, 255), lambda: transpose_down_action())\n",
-    "\n",
-    "    def get_current_time():\n",
-    "        if current_song_path is None:\n",
-    "            return 0.0\n",
-    "        if paused:\n",
-    "            return (pause_start_time - start_time - total_pause_duration) * current_speed + song_offset\n",
-    "        else:\n",
-    "            return (time.time() - start_time - total_pause_duration) * current_speed + song_offset\n",
-    "    pause_start_time = 0.0\n",
-    "\n",
-    "    def toggle_pause():\n",
-    "        nonlocal paused, total_pause_duration, start_time, pause_start_time\n",
-    "        if current_song_path is None:\n",
-    "            return\n",
-    "        if paused:\n",
-    "            pygame.mixer.music.unpause()\n",
-    "            paused = False\n",
-    "            total_pause_duration += time.time() - pause_start_time\n",
-    "        else:\n",
-    "            pygame.mixer.music.pause()\n",
-    "            paused = True\n",
-    "            pause_start_time = time.time()\n",
-    "\n",
-    "    def slower_action():\n",
-    "        nonlocal current_speed, song_offset, start_time, total_pause_duration\n",
-    "        if current_song_path is None:\n",
-    "            return\n",
-    "        cur_time = get_current_time()\n",
-    "        current_speed = max(0.5, current_speed - 0.1)\n",
-    "        change_playback_speed(current_effective_path, current_speed, cur_time)\n",
-    "        song_offset = cur_time\n",
-    "        start_time = time.time()\n",
-    "        total_pause_duration = 0.0\n",
-    "\n",
-    "    def faster_action():\n",
-    "        nonlocal current_speed, song_offset, start_time, total_pause_duration\n",
-    "        if current_song_path is None:\n",
-    "            return\n",
-    "        cur_time = get_current_time()\n",
-    "        current_speed = min(2.0, current_speed + 0.1)\n",
-    "        change_playback_speed(current_effective_path, current_speed, cur_time)\n",
-    "        song_offset = cur_time\n",
-    "        start_time = time.time()\n",
-    "        total_pause_duration = 0.0\n",
-    "\n",
-    "    def quieter_action():\n",
-    "        nonlocal volume\n",
-    "        if current_song_path is None:\n",
-    "            return\n",
-    "        volume = max(0.0, volume - 0.1)\n",
-    "        pygame.mixer.music.set_volume(volume)\n",
-    "\n",
-    "    def louder_action():\n",
-    "        nonlocal volume\n",
-    "        if current_song_path is None:\n",
-    "            return\n",
-    "        volume = min(1.0, volume + 0.1)\n",
-    "        pygame.mixer.music.set_volume(volume)\n",
-    "\n",
-    "    def back_action():\n",
-    "        nonlocal song_offset, start_time, total_pause_duration\n",
-    "        if current_song_path is None:\n",
-    "            return\n",
-    "        cur_time = get_current_time()\n",
-    "        new_time = max(0, cur_time - 10)\n",
-    "        change_playback_speed(current_effective_path, current_speed, new_time)\n",
-    "        song_offset = new_time\n",
-    "        start_time = time.time()\n",
-    "        total_pause_duration = 0.0\n",
-    "\n",
-    "    def forward_action():\n",
-    "        nonlocal song_offset, start_time, total_pause_duration\n",
-    "        if current_song_path is None:\n",
-    "            return\n",
-    "        cur_time = get_current_time()\n",
-    "        new_time = cur_time + 10\n",
-    "        change_playback_speed(current_effective_path, current_speed, new_time)\n",
-    "        song_offset = new_time\n",
-    "        start_time = time.time()\n",
-    "        total_pause_duration = 0.0\n",
-    "\n",
-    "    # In den Transpositionsaktionen stoppen wir zunächst die aktuelle Wiedergabe,\n",
-    "    # damit die temporäre Datei nicht gesperrt ist.\n",
-    "    def transpose_up_action():\n",
-    "        nonlocal current_transposition, original_chords, chords, current_song_path, song_offset, start_time, total_pause_duration, current_effective_path\n",
-    "        current_pos = get_current_time()\n",
-    "        if pygame.mixer.music.get_busy():\n",
-    "            pygame.mixer.music.stop()\n",
-    "            pygame.mixer.music.unload()\n",
-    "        current_transposition += 1\n",
-    "        temp_file = transpose_audio_file(current_song_path, current_transposition)\n",
-    "        pygame.mixer.music.load(temp_file)\n",
-    "        try:\n",
-    "            pygame.mixer.music.play(loops=0, start=current_pos)\n",
-    "        except TypeError:\n",
-    "            pygame.mixer.music.play()\n",
-    "            pygame.mixer.music.set_pos(current_pos)\n",
-    "        song_offset = current_pos\n",
-    "        start_time = time.time()\n",
-    "        total_pause_duration = 0\n",
-    "        current_effective_path = temp_file\n",
-    "        if original_chords:\n",
-    "            chords[:] = [(t, transpose_chord(ch, current_transposition)) for t, ch in original_chords]\n",
-    "\n",
-    "    def transpose_down_action():\n",
-    "        nonlocal current_transposition, original_chords, chords, current_song_path, song_offset, start_time, total_pause_duration, current_effective_path\n",
-    "        current_pos = get_current_time()\n",
-    "        if pygame.mixer.music.get_busy():\n",
-    "            pygame.mixer.music.stop()\n",
-    "            pygame.mixer.music.unload()\n",
-    "        current_transposition -= 1\n",
-    "        temp_file = transpose_audio_file(current_song_path, current_transposition)\n",
-    "        pygame.mixer.music.load(temp_file)\n",
-    "        try:\n",
-    "            pygame.mixer.music.play(loops=0, start=current_pos)\n",
-    "        except TypeError:\n",
-    "            pygame.mixer.music.play()\n",
-    "            pygame.mixer.music.set_pos(current_pos)\n",
-    "        song_offset = current_pos\n",
-    "        start_time = time.time()\n",
-    "        total_pause_duration = 0\n",
-    "        current_effective_path = temp_file\n",
-    "        if original_chords:\n",
-    "            chords[:] = [(t, transpose_chord(ch, current_transposition)) for t, ch in original_chords]\n",
-    "\n",
-    "    scrollbar_dragging = False\n",
-    "    drag_offset = 0\n",
-    "    last_scroll_time = 0\n",
-    "\n",
-    "    running = True\n",
-    "    def exit_action():\n",
-    "        nonlocal running\n",
-    "        running = False\n",
-    "\n",
-    "    def load_song(new_song_path):\n",
-    "        nonlocal current_song_path, song_offset, start_time, total_pause_duration, paused, current_speed, chords, screen, db, current_transposition, original_chords, current_effective_path\n",
-    "        current_song_path = new_song_path\n",
-    "        if current_song_path not in db:\n",
-    "            db[current_song_path] = \"\"\n",
-    "            save_database(db)\n",
-    "        if use_beat_sync:\n",
-    "            chord_filename = os.path.splitext(os.path.abspath(current_song_path))[0] + \"_Chords_BEATSYNC.txt\"\n",
-    "        else:\n",
-    "            chord_filename = os.path.splitext(os.path.abspath(current_song_path))[0] + \"_Chords.txt\"\n",
-    "        print(f\"Loading song: {current_song_path}\")\n",
-    "        sys.stdout.flush()\n",
-    "        if not os.path.exists(chord_filename):\n",
-    "            extraction_screen = pygame.display.set_mode((400, 200))\n",
-    "            pygame.display.set_caption(\"Extracting Chords\")\n",
-    "            extraction_font = pygame.font.Font(None, 36)\n",
-    "            extraction_text = extraction_font.render(\"Extracting Chords\", True, (255, 255, 255))\n",
-    "            extraction_rect = extraction_text.get_rect(center=(200, 100))\n",
-    "            extraction_screen.fill((0, 0, 0))\n",
-    "            extraction_screen.blit(extraction_text, extraction_rect)\n",
-    "            pygame.display.flip()\n",
-    "            extraction_done = threading.Event()\n",
-    "            def extraction_task():\n",
-    "                try:\n",
-    "                    new_chords = extract_chords(current_song_path, beat_sync=use_beat_sync, hop_length=hop_length)\n",
-    "                    if not new_chords:\n",
-    "                        new_chords = [(0.0, \"???\")]\n",
-    "                    chords[:] = new_chords\n",
-    "                    save_chords_to_file(new_chords, chord_filename)\n",
-    "                    print(f\"Extraction finished, saved to {chord_filename}\")\n",
-    "                    db[current_song_path] = chord_filename\n",
-    "                    save_database(db)\n",
-    "                except Exception as e:\n",
-    "                    print(\"Error extracting chords:\", e)\n",
-    "                    chords[:] = []\n",
-    "                extraction_done.set()\n",
-    "            t = threading.Thread(target=extraction_task, daemon=True)\n",
-    "            t.start()\n",
-    "            while not extraction_done.is_set():\n",
-    "                for event in pygame.event.get():\n",
-    "                    if event.type == pygame.QUIT:\n",
-    "                        pygame.quit()\n",
-    "                        return\n",
-    "                extraction_screen.fill((0, 0, 0))\n",
-    "                extraction_screen.blit(extraction_text, extraction_rect)\n",
-    "                pygame.display.flip()\n",
-    "                time.sleep(0.1)\n",
-    "        else:\n",
-    "            try:\n",
-    "                chords[:] = load_chords_from_file(chord_filename)\n",
-    "            except Exception as e:\n",
-    "                print(\"Error loading chords from file:\", e)\n",
-    "                chords[:] = []\n",
-    "        original_chords = chords.copy()\n",
-    "        current_transposition = 0\n",
-    "        current_effective_path = current_song_path\n",
-    "        update_file_manager()\n",
-    "        screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))\n",
-    "        pygame.display.set_caption(\"Player Mode\")\n",
-    "        song_offset = 0.0\n",
-    "        start_time = time.time()\n",
-    "        total_pause_duration = 0.0\n",
-    "        paused = False\n",
-    "        current_speed = 1.0\n",
-    "        pygame.mixer.music.load(current_song_path)\n",
-    "        pygame.mixer.music.play()\n",
-    "\n",
-    "    def delete_file(file):\n",
-    "        nonlocal db\n",
-    "        if file in db:\n",
-    "            del db[file]\n",
-    "            save_database(db)\n",
-    "        update_file_manager()\n",
-    "\n",
-    "    file_widgets = []\n",
-    "    update_file_manager()\n",
-    "\n",
-    "    while running:\n",
-    "        screen.fill((80, 80, 80))\n",
-    "        pygame.draw.rect(screen, (50, 50, 50), (0, 0, FILE_PANEL_WIDTH, WINDOW_HEIGHT))\n",
-    "        pygame.draw.rect(screen, (70, 70, 70), (FILE_PANEL_WIDTH, 0, RIGHT_WIDTH, RIGHT_TOP_HEIGHT))\n",
-    "        pygame.draw.rect(screen, (90, 90, 90), (FILE_PANEL_WIDTH, RIGHT_TOP_HEIGHT, RIGHT_WIDTH, CONTROLS_HEIGHT))\n",
-    "        \n",
-    "        beat_toggle.draw(screen)\n",
-    "        beat_label.draw(screen)\n",
-    "        \n",
-    "        draw_file_manager_border(screen)\n",
-    "        screen.set_clip(file_list_area)\n",
-    "        for main_btn, delete_btn in file_widgets:\n",
-    "            main_btn.draw(screen)\n",
-    "            delete_btn.draw(screen)\n",
-    "        screen.set_clip(None)\n",
-    "        dd_field.draw(screen)\n",
-    "        search_button.draw(screen)\n",
-    "        \n",
-    "        if current_song_path is not None:\n",
-    "            draw_song_title(screen)\n",
-    "        \n",
-    "        if chords:\n",
-    "            current_time_val = get_current_time()\n",
-    "            current_index = 0\n",
-    "            for i, (t, ch) in enumerate(chords):\n",
-    "                if t > current_time_val:\n",
-    "                    break\n",
-    "                current_index = i\n",
-    "            chord_prev2 = chords[current_index-2][1] if current_index-2 >= 0 else \"?\"\n",
-    "            chord_prev1 = chords[current_index-1][1] if current_index-1 >= 0 else \"?\"\n",
-    "            chord_current = chords[current_index][1] if current_index < len(chords) else \"?\"\n",
-    "            chord_next1 = chords[current_index+1][1] if current_index+1 < len(chords) else \"?\"\n",
-    "            chord_next2 = chords[current_index+2][1] if current_index+2 < len(chords) else \"?\"\n",
-    "        else:\n",
-    "            chord_prev2 = chord_prev1 = chord_current = chord_next1 = chord_next2 = \"?\"\n",
-    "        # Ausgangswerte:\n",
-    "        r_x = FILE_PANEL_WIDTH        # Startpunkt rechts vom File-Manager\n",
-    "        r_width = RIGHT_WIDTH         # Verfügbare Breite für die Akkordanzeige\n",
-    "        \n",
-    "        # Vertikale Einteilung:\n",
-    "        # Gesamt-Höhe für die Chordanzeige ist CHORDS_HEIGHT, die oberste Position liegt bei SONG_TITLE_HEIGHT.\n",
-    "        # Wir teilen CHORDS_HEIGHT in drei Bereiche:\n",
-    "        #   - Unterer Bereich: 1/5 der Höhe, Zentrum etwa bei SONG_TITLE_HEIGHT + 0.9 * CHORDS_HEIGHT\n",
-    "        #   - Mittlerer Bereich: 1/4 der Höhe, Zentrum etwa bei SONG_TITLE_HEIGHT + 0.675 * CHORDS_HEIGHT\n",
-    "        #   - Oberer Bereich: Rest (55 %), Zentrum etwa bei SONG_TITLE_HEIGHT + 0.275 * CHORDS_HEIGHT\n",
-    "        top_segment_center    = SONG_TITLE_HEIGHT + int(0.275 * CHORDS_HEIGHT)    # Für den aktuellen Akkord\n",
-    "        middle_segment_center = SONG_TITLE_HEIGHT + int(0.675 * CHORDS_HEIGHT)    # Für den 2. und 4. Akkord\n",
-    "        bottom_segment_center = SONG_TITLE_HEIGHT + int(0.9 * CHORDS_HEIGHT)      # Für den 1. und 5. Akkord\n",
-    "        \n",
-    "        # Horizontale Positionen (wie zuvor)\n",
-    "        pos_prev2    = (r_x + int(r_width * 0.1),  bottom_segment_center)    # 1. Akkord (links)\n",
-    "        pos_prev1    = (r_x + int(r_width * 0.325), middle_segment_center)    # 2. Akkord\n",
-    "        pos_current  = (r_x + int(r_width * 0.5),   top_segment_center)       # Aktueller Akkord (Mitte)\n",
-    "        pos_next1    = (r_x + int(r_width * 0.7),   middle_segment_center)    # 4. Akkord\n",
-    "        pos_next2    = (r_x + int(r_width * 0.9),   bottom_segment_center)    # 5. Akkord (rechts)\n",
-    "\n",
-    "\n",
-    "        FontScaller = 1.8\n",
-    "        font_prev2 = pygame.font.Font(None, int(36 * FontScaller))\n",
-    "        font_prev1 = pygame.font.Font(None, int(48 * FontScaller))\n",
-    "        font_current = pygame.font.Font(None, int(72 * FontScaller))\n",
-    "        font_next1 = pygame.font.Font(None, int(48 * FontScaller))\n",
-    "        font_next2 = pygame.font.Font(None, int(36 * FontScaller))\n",
-    "        surf_prev2 = font_prev2.render(chord_prev2, True, (255, 255, 255))\n",
-    "        surf_prev1 = font_prev1.render(chord_prev1, True, (255, 255, 255))\n",
-    "        surf_current = font_current.render(chord_current, True, (255, 255, 0))\n",
-    "        surf_next1 = font_next1.render(chord_next1, True, (255, 255, 255))\n",
-    "        surf_next2 = font_next2.render(chord_next2, True, (255, 255, 255))\n",
-    "        screen.blit(surf_prev2, surf_prev2.get_rect(center=pos_prev2))\n",
-    "        screen.blit(surf_prev1, surf_prev1.get_rect(center=pos_prev1))\n",
-    "        screen.blit(surf_current, surf_current.get_rect(center=pos_current))\n",
-    "        screen.blit(surf_next1, surf_next1.get_rect(center=pos_next1))\n",
-    "        screen.blit(surf_next2, surf_next2.get_rect(center=pos_next2))\n",
-    "        \n",
-    "        time_area_rect = pygame.Rect(FILE_PANEL_WIDTH, SONG_TITLE_HEIGHT + CHORDS_HEIGHT, RIGHT_WIDTH, TIME_HEIGHT)\n",
-    "        pygame.draw.rect(screen, (30, 30, 30), time_area_rect)\n",
-    "        time_text = f\"Time: {get_current_time():.2f}s   Speed: {current_speed:.1f}   Volume: {volume:.1f}   Transpose: {current_transposition}\"\n",
-    "        time_surf = pygame.font.Font(None, 28).render(time_text, True, (255, 255, 255))\n",
-    "        screen.blit(time_surf, time_surf.get_rect(center=time_area_rect.center))\n",
-    "        \n",
-    "        for btn in additional_controls:\n",
-    "            btn.draw(screen)\n",
-    "        for btn in control_buttons:\n",
-    "            btn.draw(screen)\n",
-    "        trans_up_btn.draw(screen)\n",
-    "        trans_down_btn.draw(screen)\n",
-    "        \n",
-    "        for event in pygame.event.get():\n",
-    "            if event.type == pygame.QUIT:\n",
-    "                running = False\n",
-    "            elif event.type == pygame.DROPFILE:\n",
-    "                load_song(event.file)\n",
-    "            elif event.type == pygame.MOUSEWHEEL:\n",
-    "                scroll_offset += event.y * 20\n",
-    "                scroll_offset = min(0, scroll_offset)\n",
-    "                max_scroll = -max(0, (len(file_widgets) * 40) - file_list_area.height)\n",
-    "                scroll_offset = max(max_scroll, scroll_offset)\n",
-    "                last_scroll_time = pygame.time.get_ticks()\n",
-    "                update_file_manager()\n",
-    "            elif event.type == pygame.MOUSEBUTTONDOWN:\n",
-    "                if event.button != 1:\n",
-    "                    continue\n",
-    "                if pygame.time.get_ticks() - last_scroll_time < 300:\n",
-    "                    continue\n",
-    "                pos = pygame.mouse.get_pos()\n",
-    "                scrollbar_rect = pygame.Rect(FILE_PANEL_WIDTH - 10, file_list_area.top, 10, file_list_area.height)\n",
-    "                if scrollbar_rect.collidepoint(pos):\n",
-    "                    scrollbar_dragging = True\n",
-    "                    drag_offset = pos[1] - scrollbar_rect.y\n",
-    "                elif pos[0] < FILE_PANEL_WIDTH:\n",
-    "                    for main_btn, del_btn in file_widgets:\n",
-    "                        if main_btn.is_clicked(pos):\n",
-    "                            main_btn.action()\n",
-    "                        elif del_btn.is_clicked(pos):\n",
-    "                            del_btn.action()\n",
-    "                    if beat_toggle.is_clicked(pos):\n",
-    "                        beat_toggle.action()\n",
-    "                    if search_button.is_clicked(pos):\n",
-    "                        search_button.action()\n",
-    "                else:\n",
-    "                    for btn in control_buttons:\n",
-    "                        if btn.is_clicked(pos):\n",
-    "                            btn.action()\n",
-    "                    for btn in additional_controls:\n",
-    "                        if btn.is_clicked(pos):\n",
-    "                            btn.action()\n",
-    "                    if trans_up_btn.is_clicked(pos):\n",
-    "                        trans_up_btn.action()\n",
-    "                    elif trans_down_btn.is_clicked(pos):\n",
-    "                        trans_down_btn.action()\n",
-    "            elif event.type == pygame.MOUSEBUTTONUP:\n",
-    "                scrollbar_dragging = False\n",
-    "            elif event.type == pygame.MOUSEMOTION:\n",
-    "                if 'scrollbar_dragging' in locals() and scrollbar_dragging:\n",
-    "                    mouse_y = event.pos[1]\n",
-    "                    new_thumb_y = mouse_y - drag_offset - file_list_area.top\n",
-    "                    total_content_height = len(file_widgets) * 40\n",
-    "                    if total_content_height > file_list_area.height:\n",
-    "                        max_scroll = total_content_height - file_list_area.height\n",
-    "                        new_scroll = - (new_thumb_y / (file_list_area.height - (file_list_area.height * file_list_area.height / total_content_height))) * max_scroll\n",
-    "                        scroll_offset = int(new_scroll)\n",
-    "                        scroll_offset = min(0, scroll_offset)\n",
-    "                        scroll_offset = max(-max_scroll, scroll_offset)\n",
-    "                        update_file_manager()\n",
-    "        pygame.display.flip()\n",
-    "        clock.tick(30)\n",
-    "    \n",
-    "    pygame.mixer.music.stop()\n",
-    "    pygame.quit()\n",
-    "\n",
-    "def cleanup_temp_files():\n",
-    "    # Löscht alle Files aus der Liste temp_speed_files\n",
-    "    for file in temp_speed_files:\n",
-    "        if os.path.exists(file):\n",
-    "            try:\n",
-    "                os.remove(file)\n",
-    "            except Exception as e:\n",
-    "                print(f\"Error cleaning {file}: {e}\")\n",
-    "    # Löscht die transponierte Datei aus dem Systemtemp-Verzeichnis\n",
-    "    temp_transposed = os.path.join(tempfile.gettempdir(), \"temp_transposed.wav\")\n",
-    "    if os.path.exists(temp_transposed):\n",
-    "        try:\n",
-    "            os.remove(temp_transposed)\n",
-    "        except Exception as e:\n",
-    "            print(f\"Error cleaning temp_transposed.wav: {e}\")\n",
-    "\n",
-    "if __name__ == \"__main__\":\n",
-    "    try:\n",
-    "        initial_file = None\n",
-    "        chords = []\n",
-    "        last_scroll_time = 0\n",
-    "        player_mode_gui(chords, initial_file)\n",
-    "    finally:\n",
-    "        cleanup_temp_files()\n"
-   ]
-  },
-  {
-   "cell_type": "code",
-   "execution_count": null,
-   "id": "536032a6-1129-4df5-9b93-fe5542558679",
-   "metadata": {},
-   "outputs": [],
-   "source": [
-    "from pillow import Image\n",
-    "img = Image.open(r\"C:\\Users\\abcde\\Pictures\\Chord Extractor\\Steuerelemente\\play__pause__button__player__sign-1024.webp\")\n",
-    "print(\"Jeah!\")\n",
-    "img.save(r\"C:\\Users\\abcde\\Pictures\\Chord Extractor\\Steuerelemente\\play__pause__button__player__sign-1024.png\", \"PNG\")\n",
-    "print(\"Jeah!!\")"
-   ]
-  },
-  {
-   "cell_type": "code",
-   "execution_count": 6,
-   "id": "ec09495f-3f09-4c3c-9d97-de86ca37cbb9",
-   "metadata": {},
-   "outputs": [],
-   "source": [
-    "import os\n",
-    "import sys\n",
-    "import time\n",
-    "import subprocess\n",
-    "import threading\n",
-    "import json\n",
-    "import uuid\n",
-    "import tempfile\n",
-    "import numpy as np\n",
-    "import soundfile as sf\n",
-    "import librosa\n",
-    "import pygame\n",
-    "import tkinter as tk\n",
-    "from tkinter.filedialog import askopenfilename\n",
-    "\n",
-    "# Pfad zu ffmpeg (bitte anpassen!)\n",
-    "FFMPEG_PATH = r'C:/Users/abcde/Downloads/ffmpeg-7.1-full_build/ffmpeg-7.1-full_build/bin/ffmpeg.exe'\n",
-    "DB_FILE = \"songs_db.json\"\n",
-    "temp_speed_files = []\n",
-    "\n",
-    "# --- Datenbankfunktionen ---\n",
-    "def load_database():\n",
-    "    if os.path.exists(DB_FILE):\n",
-    "        with open(DB_FILE, 'r', encoding='utf-8') as f:\n",
-    "            return json.load(f)\n",
-    "    return {}\n",
-    "\n",
-    "def save_database(db):\n",
-    "    with open(DB_FILE, 'w', encoding='utf-8') as f:\n",
-    "        json.dump(db, f, indent=2)\n",
-    "\n",
-    "# --- Funktionen zum Speichern/Laden der Chordliste ---\n",
-    "def save_chords_to_file(chords, filename):\n",
-    "    with open(filename, 'w', encoding='utf-8') as f:\n",
-    "        for t, ch in chords:\n",
-    "            f.write(f\"{t}\\t{ch}\\n\")\n",
-    "    print(f\"Chords saved to {filename}\")\n",
-    "    sys.stdout.flush()\n",
-    "\n",
-    "def load_chords_from_file(filename):\n",
-    "    chords = []\n",
-    "    with open(filename, 'r', encoding='utf-8') as f:\n",
-    "        for line in f:\n",
-    "            line = line.strip()\n",
-    "            if line:\n",
-    "                parts = line.split('\\t')\n",
-    "                if len(parts) >= 2:\n",
-    "                    try:\n",
-    "                        t = float(parts[0])\n",
-    "                        ch = parts[1]\n",
-    "                        chords.append((t, ch))\n",
-    "                    except Exception as e:\n",
-    "                        print(\"Error parsing line:\", line, e)\n",
-    "    print(f\"Chords loaded from {filename}\")\n",
-    "    sys.stdout.flush()\n",
-    "    return chords\n",
-    "\n",
-    "# --- Audioverarbeitung und Akkorderkennung ---\n",
-    "def convert_mp3_to_wav(file_path):\n",
-    "    if file_path.lower().endswith('.mp3'):\n",
-    "        abs_file_path = os.path.abspath(file_path)\n",
-    "        wav_path = os.path.splitext(abs_file_path)[0] + \".wav\"\n",
-    "        if not os.path.exists(abs_file_path):\n",
-    "            raise FileNotFoundError(f\"File {abs_file_path} not found.\")\n",
-    "        subprocess.run([FFMPEG_PATH, '-i', abs_file_path, wav_path], check=True)\n",
-    "        if not os.path.exists(wav_path):\n",
-    "            raise FileNotFoundError(f\"WAV file {wav_path} not created.\")\n",
-    "        return wav_path\n",
-    "    return file_path\n",
-    "\n",
-    "def clean_path(file_path):\n",
-    "    return file_path.strip('\"')\n",
-    "\n",
-    "def detect_chord(chroma_column):\n",
-    "    if len(chroma_column) != 12:\n",
-    "        chroma_column = np.resize(chroma_column, (12,))\n",
-    "    \n",
-    "    chord_templates = {\n",
-    "        '':   np.array([1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0]),\n",
-    "        'm':   np.array([1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0]),\n",
-    "        'sus2':  np.array([1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]),\n",
-    "        'sus4':  np.array([1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0]),\n",
-    "        '7':     np.array([1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0]),\n",
-    "        'maj7':  np.array([1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1]),\n",
-    "        'm7':  np.array([1, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0]),\n",
-    "        '9':     np.array([1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1])\n",
-    "    }\n",
-    "    \n",
-    "    chord_labels = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']\n",
-    "    best_score = -np.inf\n",
-    "    best_chord = \"N.C.\"\n",
-    "    \n",
-    "    norm = np.linalg.norm(chroma_column)\n",
-    "    chroma_norm = chroma_column / norm if norm > 0 else chroma_column\n",
-    "    \n",
-    "    for i in range(12):\n",
-    "        for quality, template in chord_templates.items():\n",
-    "            template_rotated = np.roll(template, i)\n",
-    "            t_norm = np.linalg.norm(template_rotated)\n",
-    "            template_norm = template_rotated / t_norm if t_norm > 0 else template_rotated\n",
-    "            score = np.dot(chroma_norm, template_norm)\n",
-    "            if score > best_score:\n",
-    "                best_score = score\n",
-    "                best_chord = chord_labels[i] + quality\n",
-    "    return best_chord\n",
-    "\n",
-    "def extract_chords(file_path, beat_sync=False, hop_length=512):\n",
-    "    file_path = clean_path(file_path)\n",
-    "    file_path = convert_mp3_to_wav(file_path)\n",
-    "    abs_file_path = os.path.abspath(file_path)\n",
-    "    if not os.path.exists(abs_file_path):\n",
-    "        raise FileNotFoundError(f\"File {abs_file_path} not found.\")\n",
-    "    y, sr = sf.read(abs_file_path)\n",
-    "    y = y[:, 0] if y.ndim > 1 else y\n",
-    "    y_harmonic, y_percussive = librosa.effects.hpss(y)\n",
-    "    chromagram = librosa.feature.chroma_cqt(y=y_harmonic, sr=sr, hop_length=hop_length, n_chroma=12)\n",
-    "    if beat_sync:\n",
-    "        tempo, beats = librosa.beat.beat_track(y=y_percussive, sr=sr, hop_length=hop_length)\n",
-    "        chroma_sync = librosa.util.sync(chromagram, beats, aggregate=np.mean)\n",
-    "        print(\"Chroma_sync shape before check:\", chroma_sync.shape)\n",
-    "        sys.stdout.flush()\n",
-    "        if chroma_sync.shape[0] > 12:\n",
-    "            chroma_sync = chroma_sync[:12, :]\n",
-    "        elif chroma_sync.shape[0] < 12:\n",
-    "            pad_width = 12 - chroma_sync.shape[0]\n",
-    "            chroma_sync = np.pad(chroma_sync, ((0, pad_width), (0, 0)), mode='constant')\n",
-    "        print(\"Chroma_sync shape after check:\", chroma_sync.shape)\n",
-    "        sys.stdout.flush()\n",
-    "        times = librosa.frames_to_time(beats[:-1], sr=sr, hop_length=hop_length)\n",
-    "    else:\n",
-    "        chroma_sync = chromagram\n",
-    "        times = librosa.frames_to_time(np.arange(chromagram.shape[1]), sr=sr, hop_length=hop_length)\n",
-    "    chord_sequence = [detect_chord(np.resize(chroma_sync[:, i], (12,))) for i in range(chroma_sync.shape[1])]\n",
-    "    simplified_chords = []\n",
-    "    timestamps = []\n",
-    "    prev_chord = None\n",
-    "    for i, chord in enumerate(chord_sequence):\n",
-    "        if chord != prev_chord:\n",
-    "            simplified_chords.append(chord)\n",
-    "            if i < len(times):\n",
-    "                timestamps.append(times[i])\n",
-    "            prev_chord = chord\n",
-    "    print(\"Extraction finished. Number of chords found:\", len(simplified_chords))\n",
-    "    sys.stdout.flush()\n",
-    "    return list(zip(timestamps, simplified_chords))\n",
-    "\n",
-    "def change_playback_speed(audio_file, speed, start_offset):\n",
-    "    duration = get_song_duration(audio_file)\n",
-    "    # Falls der Startoffset über der Dauer liegt, setze ihn auf kurz vor Ende\n",
-    "    if start_offset >= duration:\n",
-    "        start_offset = max(0, duration - 0.1)  # 0.1 Sekunde vor dem Ende\n",
-    "    temp_file = 'temp_speed_changed.wav'\n",
-    "    if pygame.mixer.music.get_busy():\n",
-    "        pygame.mixer.music.stop()\n",
-    "        pygame.mixer.music.unload()\n",
-    "    if os.path.exists(temp_file):\n",
-    "        os.remove(temp_file)\n",
-    "    subprocess.run([\n",
-    "        FFMPEG_PATH, '-y', '-ss', str(start_offset), '-i', audio_file,\n",
-    "        '-filter:a', f'atempo={speed}', '-vn', temp_file\n",
-    "    ], check=True)\n",
-    "    pygame.mixer.music.load(temp_file)\n",
-    "    pygame.mixer.music.play()\n",
-    "    temp_speed_files.append(temp_file)\n",
-    "\n",
-    "# --- Angepasste Transpositionsfunktionen ---\n",
-    "# Hier wird das transponierte Audio in eine temporäre Datei im Systemtemp-Verzeichnis geschrieben.\n",
-    "def transpose_audio_file(song_path, n_steps):\n",
-    "    temp_file = os.path.join(tempfile.gettempdir(), \"temp_transposed.wav\")\n",
-    "    # Hier versuchen wir, die Datei zu löschen, falls sie existiert.\n",
-    "    if os.path.exists(temp_file):\n",
-    "        try:\n",
-    "            os.remove(temp_file)\n",
-    "        except PermissionError:\n",
-    "            # Falls die Datei in Benutzung ist, ignorieren wir den Fehler.\n",
-    "            pass\n",
-    "    y, sr = librosa.load(song_path, sr=None)\n",
-    "    y_transposed = librosa.effects.pitch_shift(y, sr=sr, n_steps=n_steps)\n",
-    "    sf.write(temp_file, y_transposed, sr)\n",
-    "    return temp_file\n",
-    "\n",
-    "def transpose_chord(chord, n_steps):\n",
-    "    chord_labels = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']\n",
-    "    if chord not in chord_labels:\n",
-    "        return chord\n",
-    "    idx = chord_labels.index(chord)\n",
-    "    new_idx = (idx + n_steps) % 12\n",
-    "    return chord_labels[new_idx]\n",
-    "\n",
-    "# --- Erweiterte Button-Klasse ---\n",
-    "class Button:\n",
-    "    def __init__(self, rect, color, text, text_color, action, image_path=None, max_width=None, initial_font_size=36):\n",
-    "        self.rect = pygame.Rect(rect)\n",
-    "        self.color = color\n",
-    "        self.text = text\n",
-    "        self.text_color = text_color\n",
-    "        self.action = action\n",
-    "        self.image = None\n",
-    "        if image_path is not None:\n",
-    "            self.image = pygame.image.load(image_path).convert_alpha()\n",
-    "            self.image = pygame.transform.scale(self.image, (self.rect.width, self.rect.height))\n",
-    "        if max_width is not None:\n",
-    "            size = initial_font_size\n",
-    "            self.font = pygame.font.Font(None, size)\n",
-    "            while self.font.size(text)[0] > max_width and size > 10:\n",
-    "                size -= 1\n",
-    "                self.font = pygame.font.Font(None, size)\n",
-    "        else:\n",
-    "            self.font = pygame.font.Font(None, initial_font_size)\n",
-    "    def draw(self, surface):\n",
-    "        pygame.draw.rect(surface, self.color, self.rect)\n",
-    "        pygame.draw.rect(surface, (0,0,0), self.rect, 1)\n",
-    "        if self.image is not None:\n",
-    "            surface.blit(self.image, self.rect)\n",
-    "        else:\n",
-    "            txt_surf = self.font.render(self.text, True, self.text_color)\n",
-    "            txt_rect = txt_surf.get_rect(center=self.rect.center)\n",
-    "            surface.blit(txt_surf, txt_rect)\n",
-    "    def is_clicked(self, pos):\n",
-    "        return self.rect.collidepoint(pos)\n",
-    "\n",
-    "\n",
-    "# --- Datei-Auswahldialog (Tkinter) ---\n",
-    "def search_file():\n",
-    "    root = tk.Tk()\n",
-    "    root.withdraw()\n",
-    "    filename = askopenfilename(title=\"Select a file\", filetypes=[(\"Audio Files\", \"*.mp3 *.wav\")])\n",
-    "    root.destroy()\n",
-    "    return filename\n",
-    "\n",
-    "# --- Haupt-GUI ---\n",
-    "def player_mode_gui(chords, initial_song_path=None):\n",
-    "    pygame.init()\n",
-    "    pygame.event.set_allowed([pygame.QUIT, pygame.MOUSEBUTTONDOWN, pygame.DROPFILE,\n",
-    "                              pygame.MOUSEWHEEL, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION])\n",
-    "    WINDOW_WIDTH, WINDOW_HEIGHT = 1000, 600\n",
-    "    screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))\n",
-    "    pygame.display.set_caption(\"Player Mode\")\n",
-    "    clock = pygame.time.Clock()\n",
-    "\n",
-    "    db = load_database()\n",
-    "\n",
-    "    SONG_TITLE_HEIGHT = 40\n",
-    "    RIGHT_TOP_HEIGHT = 400\n",
-    "    CHORDS_HEIGHT = int(RIGHT_TOP_HEIGHT * 0.75) - SONG_TITLE_HEIGHT\n",
-    "    TIME_HEIGHT = RIGHT_TOP_HEIGHT - (CHORDS_HEIGHT + SONG_TITLE_HEIGHT)\n",
-    "    CONTROLS_HEIGHT = WINDOW_HEIGHT - RIGHT_TOP_HEIGHT\n",
-    "\n",
-    "    FILE_PANEL_WIDTH = 250\n",
-    "    RIGHT_WIDTH = WINDOW_WIDTH - FILE_PANEL_WIDTH\n",
-    "\n",
-    "    current_speed = 1.0\n",
-    "    song_offset = 0.0\n",
-    "    start_time = 0.0\n",
-    "    total_pause_duration = 0.0\n",
-    "    paused = False\n",
-    "    volume = 0.5\n",
-    "    hop_length = 512\n",
-    "\n",
-    "    # Variable für aktuell abgespielten (effektiven) Audiopfad\n",
-    "    current_effective_path = initial_song_path\n",
-    "\n",
-    "    # Transpositionsvariablen\n",
-    "    current_transposition = 0\n",
-    "    original_chords = []\n",
-    "\n",
-    "    pygame.mixer.init()\n",
-    "    pygame.mixer.music.set_volume(volume)\n",
-    "    current_song_path = initial_song_path\n",
-    "\n",
-    "    use_beat_sync = True\n",
-    "\n",
-    "    scroll_offset = 5\n",
-    "    margin_top = 0\n",
-    "    margin_bottom = 30\n",
-    "    file_list_area = pygame.Rect(0, 50 + margin_top, FILE_PANEL_WIDTH, WINDOW_HEIGHT - 50 - 80 - margin_bottom)\n",
-    "\n",
-    "    beat_toggle_rect = (10, 10, 30, 30)\n",
-    "    def toggle_beat_sync():\n",
-    "        nonlocal use_beat_sync, beat_toggle\n",
-    "        use_beat_sync = not use_beat_sync\n",
-    "        beat_toggle.text = \"X\" if use_beat_sync else \"\"\n",
-    "    beat_toggle = Button(beat_toggle_rect, (128, 128, 128), \"X\", (0, 0, 0), toggle_beat_sync)\n",
-    "    beat_label = Button((50, 10, 100, 30), (80, 80, 80), \"BeatSync\", (255, 255, 255), lambda: None)\n",
-    "    \n",
-    "    file_widgets = []\n",
-    "    def update_file_manager():\n",
-    "        nonlocal file_widgets, db, scroll_offset\n",
-    "        folder_files = [os.path.join(os.getcwd(), f) for f in os.listdir('.') if f.lower().endswith(('.mp3','.wav'))]\n",
-    "        db_files = list(db.keys())\n",
-    "        all_files = list(set(folder_files + db_files))\n",
-    "        all_files.sort()\n",
-    "        file_widgets.clear()\n",
-    "        for idx, file in enumerate(all_files):\n",
-    "            main_rect = (10, file_list_area.top + idx * 40 + scroll_offset, FILE_PANEL_WIDTH - 20 - 25, 30)\n",
-    "            delete_rect = (10 + (FILE_PANEL_WIDTH - 20 - 25), file_list_area.top + idx * 40 + scroll_offset, 25, 30)\n",
-    "            main_btn = Button(main_rect, (211, 211, 211), os.path.basename(file), (0, 0, 0),\n",
-    "                              lambda f=file: load_song(f),\n",
-    "                              max_width=FILE_PANEL_WIDTH - 20 - 25, initial_font_size=36)\n",
-    "            delete_btn = Button(delete_rect, (150, 0, 0), \"X\", (255, 255, 255),\n",
-    "                                lambda f=file: delete_file(f),\n",
-    "                                max_width=25, initial_font_size=24)\n",
-    "            file_widgets.append((main_btn, delete_btn))\n",
-    "    update_file_manager()\n",
-    "\n",
-    "    search_button_rect = (10, WINDOW_HEIGHT - 40, FILE_PANEL_WIDTH - 20, 30)\n",
-    "    search_button = Button(search_button_rect, (180, 211, 211), \"Search File\", (0, 0, 0),\n",
-    "                           lambda: load_song(search_file()),\n",
-    "                           max_width=FILE_PANEL_WIDTH - 20, initial_font_size=36)\n",
-    "    dd_field_rect = (10, WINDOW_HEIGHT - 20, FILE_PANEL_WIDTH - 20, 30)\n",
-    "    dd_field = Button(dd_field_rect, (100, 180, 180), \"Drag & Drop File\", (0, 0, 0),\n",
-    "                      lambda: None, max_width=FILE_PANEL_WIDTH - 20, initial_font_size=24)\n",
-    "\n",
-    "    def draw_file_manager_border(surface):\n",
-    "        pygame.draw.rect(surface, (0, 0, 0), file_list_area, 2)\n",
-    "\n",
-    "    def draw_song_title(surface):\n",
-    "        if current_song_path is not None:\n",
-    "            song_name = os.path.basename(current_song_path)\n",
-    "            title_text = \"Song: \" + song_name\n",
-    "            title_font = pygame.font.Font(None, 36)\n",
-    "            title_surf = title_font.render(title_text, True, (255, 255, 255))\n",
-    "            title_rect = title_surf.get_rect(midleft=(FILE_PANEL_WIDTH + 10, SONG_TITLE_HEIGHT // 2))\n",
-    "            surface.blit(title_surf, title_rect)\n",
-    "\n",
-    "    row1_y = RIGHT_TOP_HEIGHT + 20\n",
-    "    row2_y = RIGHT_TOP_HEIGHT + 100\n",
-    "    \n",
-    "    BUTTON_WIDTH1, BUTTON_HEIGHT1 = 130, 50\n",
-    "    gap1 = (RIGHT_WIDTH - 4 * BUTTON_WIDTH1) // 5\n",
-    "    row1_start_x = FILE_PANEL_WIDTH + gap1\n",
-    "    additional_controls = []\n",
-    "    additional_controls.append(Button((row1_start_x, row1_y, BUTTON_WIDTH1, BUTTON_HEIGHT1),\n",
-    "                                        (200, 200, 200), \"Play/Pause\", (0, 0, 0), lambda: toggle_pause()))\n",
-    "    additional_controls.append(Button((row1_start_x + BUTTON_WIDTH1 + gap1, row1_y, BUTTON_WIDTH1, BUTTON_HEIGHT1),\n",
-    "                                        (144, 238, 144), \"Faster\", (0, 0, 0), lambda: faster_action()))\n",
-    "    additional_controls.append(Button((row1_start_x + 2*(BUTTON_WIDTH1 + gap1), row1_y, BUTTON_WIDTH1, BUTTON_HEIGHT1),\n",
-    "                                        (173, 216, 230), \"Louder\", (0, 0, 0), lambda: louder_action()))\n",
-    "    additional_controls.append(Button((row1_start_x + 3*(BUTTON_WIDTH1 + gap1), row1_y, BUTTON_WIDTH1, BUTTON_HEIGHT1),\n",
-    "                                        (255, 200, 0), \"Forward\", (0, 0, 0), lambda: forward_action()))\n",
-    "    \n",
-    "    BUTTON_WIDTH2, BUTTON_HEIGHT2 = 130, 50\n",
-    "    gap2 = (RIGHT_WIDTH - 4 * BUTTON_WIDTH2) // 5\n",
-    "    row2_start_x = FILE_PANEL_WIDTH + gap2\n",
-    "    control_buttons = []\n",
-    "    control_buttons.append(Button((row2_start_x, row2_y, BUTTON_WIDTH2, BUTTON_HEIGHT2),\n",
-    "                                    (255, 0, 0), \"Exit\", (255, 255, 255), lambda: exit_action()))\n",
-    "    control_buttons.append(Button((row2_start_x + BUTTON_WIDTH2 + gap2, row2_y, BUTTON_WIDTH2, BUTTON_HEIGHT2),\n",
-    "                                    (0, 128, 0), \"Slower\", (255, 255, 255), lambda: slower_action()))\n",
-    "    control_buttons.append(Button((row2_start_x + 2*(BUTTON_WIDTH2 + gap2), row2_y, BUTTON_WIDTH2, BUTTON_HEIGHT2),\n",
-    "                                    (0, 0, 139), \"Quieter\", (255, 255, 255), lambda: quieter_action()))\n",
-    "    control_buttons.append(Button((row2_start_x + 3*(BUTTON_WIDTH2 + gap2), row2_y, BUTTON_WIDTH2, BUTTON_HEIGHT2),\n",
-    "                                    (255, 140, 0), \"Back\", (0, 0, 0), lambda: back_action()))\n",
-    "    \n",
-    "    # Neue Transpose-Buttons\n",
-    "    BUTTON_WIDTH_TRANS, BUTTON_HEIGHT_TRANS = 130, 50\n",
-    "    gap_trans = (RIGHT_WIDTH - 2 * BUTTON_WIDTH_TRANS) // 3\n",
-    "    trans_start_x = FILE_PANEL_WIDTH + gap_trans\n",
-    "    trans_y = RIGHT_TOP_HEIGHT + 160\n",
-    "    trans_up_btn = Button((trans_start_x, trans_y, BUTTON_WIDTH_TRANS, BUTTON_HEIGHT_TRANS),\n",
-    "                          (100, 149, 237), \"Transpose Up\", (255, 255, 255), lambda: transpose_up_action())\n",
-    "    trans_down_btn = Button((trans_start_x + BUTTON_WIDTH_TRANS + gap_trans, trans_y, BUTTON_WIDTH_TRANS, BUTTON_HEIGHT_TRANS),\n",
-    "                            (100, 149, 237), \"Transpose Down\", (255, 255, 255), lambda: transpose_down_action())\n",
-    "\n",
-    "    def get_current_time():\n",
-    "        if current_song_path is None:\n",
-    "            return 0.0\n",
-    "        if paused:\n",
-    "            return (pause_start_time - start_time - total_pause_duration) * current_speed + song_offset\n",
-    "        else:\n",
-    "            return (time.time() - start_time - total_pause_duration) * current_speed + song_offset\n",
-    "    pause_start_time = 0.0\n",
-    "\n",
-    "    def toggle_pause():\n",
-    "        nonlocal paused, total_pause_duration, start_time, pause_start_time\n",
-    "        if current_song_path is None:\n",
-    "            return\n",
-    "        if paused:\n",
-    "            pygame.mixer.music.unpause()\n",
-    "            paused = False\n",
-    "            total_pause_duration += time.time() - pause_start_time\n",
-    "        else:\n",
-    "            pygame.mixer.music.pause()\n",
-    "            paused = True\n",
-    "            pause_start_time = time.time()\n",
-    "\n",
-    "    def slower_action():\n",
-    "        nonlocal current_speed, song_offset, start_time, total_pause_duration\n",
-    "        if current_song_path is None:\n",
-    "            return\n",
-    "        cur_time = get_current_time()\n",
-    "        current_speed = max(0.5, current_speed - 0.1)\n",
-    "        change_playback_speed(current_effective_path, current_speed, cur_time)\n",
-    "        song_offset = cur_time\n",
-    "        start_time = time.time()\n",
-    "        total_pause_duration = 0.0\n",
-    "\n",
-    "    def faster_action():\n",
-    "        nonlocal current_speed, song_offset, start_time, total_pause_duration\n",
-    "        if current_song_path is None:\n",
-    "            return\n",
-    "        cur_time = get_current_time()\n",
-    "        current_speed = min(2.0, current_speed + 0.1)\n",
-    "        change_playback_speed(current_effective_path, current_speed, cur_time)\n",
-    "        song_offset = cur_time\n",
-    "        start_time = time.time()\n",
-    "        total_pause_duration = 0.0\n",
-    "\n",
-    "    def quieter_action():\n",
-    "        nonlocal volume\n",
-    "        if current_song_path is None:\n",
-    "            return\n",
-    "        volume = max(0.0, volume - 0.1)\n",
-    "        pygame.mixer.music.set_volume(volume)\n",
-    "\n",
-    "    def louder_action():\n",
-    "        nonlocal volume\n",
-    "        if current_song_path is None:\n",
-    "            return\n",
-    "        volume = min(1.0, volume + 0.1)\n",
-    "        pygame.mixer.music.set_volume(volume)\n",
-    "\n",
-    "    def back_action():\n",
-    "        nonlocal song_offset, start_time, total_pause_duration\n",
-    "        if current_song_path is None:\n",
-    "            return\n",
-    "        cur_time = get_current_time()\n",
-    "        new_time = max(0, cur_time - 10)\n",
-    "        change_playback_speed(current_effective_path, current_speed, new_time)\n",
-    "        song_offset = new_time\n",
-    "        start_time = time.time()\n",
-    "        total_pause_duration = 0.0\n",
-    "\n",
-    "    def forward_action():\n",
-    "        nonlocal song_offset, start_time, total_pause_duration\n",
-    "        if current_song_path is None:\n",
-    "            return\n",
-    "        cur_time = get_current_time()\n",
-    "        new_time = cur_time + 10\n",
-    "        change_playback_speed(current_effective_path, current_speed, new_time)\n",
-    "        song_offset = new_time\n",
-    "        start_time = time.time()\n",
-    "        total_pause_duration = 0.0\n",
-    "\n",
-    "    # In den Transpositionsaktionen stoppen wir zunächst die aktuelle Wiedergabe,\n",
-    "    # damit die temporäre Datei nicht gesperrt ist.\n",
-    "    def transpose_up_action():\n",
-    "        nonlocal current_transposition, original_chords, chords, current_song_path, song_offset, start_time, total_pause_duration, current_effective_path\n",
-    "        current_pos = get_current_time()\n",
-    "        if pygame.mixer.music.get_busy():\n",
-    "            pygame.mixer.music.stop()\n",
-    "            pygame.mixer.music.unload()\n",
-    "        current_transposition += 1\n",
-    "        temp_file = transpose_audio_file(current_song_path, current_transposition)\n",
-    "        pygame.mixer.music.load(temp_file)\n",
-    "        try:\n",
-    "            pygame.mixer.music.play(loops=0, start=current_pos)\n",
-    "        except TypeError:\n",
-    "            pygame.mixer.music.play()\n",
-    "            pygame.mixer.music.set_pos(current_pos)\n",
-    "        song_offset = current_pos\n",
-    "        start_time = time.time()\n",
-    "        total_pause_duration = 0\n",
-    "        current_effective_path = temp_file\n",
-    "        if original_chords:\n",
-    "            chords[:] = [(t, transpose_chord(ch, current_transposition)) for t, ch in original_chords]\n",
-    "\n",
-    "    def transpose_down_action():\n",
-    "        nonlocal current_transposition, original_chords, chords, current_song_path, song_offset, start_time, total_pause_duration, current_effective_path\n",
-    "        current_pos = get_current_time()\n",
-    "        if pygame.mixer.music.get_busy():\n",
-    "            pygame.mixer.music.stop()\n",
-    "            pygame.mixer.music.unload()\n",
-    "        current_transposition -= 1\n",
-    "        temp_file = transpose_audio_file(current_song_path, current_transposition)\n",
-    "        pygame.mixer.music.load(temp_file)\n",
-    "        try:\n",
-    "            pygame.mixer.music.play(loops=0, start=current_pos)\n",
-    "        except TypeError:\n",
-    "            pygame.mixer.music.play()\n",
-    "            pygame.mixer.music.set_pos(current_pos)\n",
-    "        song_offset = current_pos\n",
-    "        start_time = time.time()\n",
-    "        total_pause_duration = 0\n",
-    "        current_effective_path = temp_file\n",
-    "        if original_chords:\n",
-    "            chords[:] = [(t, transpose_chord(ch, current_transposition)) for t, ch in original_chords]\n",
-    "\n",
-    "    scrollbar_dragging = False\n",
-    "    drag_offset = 0\n",
-    "    last_scroll_time = 0\n",
-    "\n",
-    "    running = True\n",
-    "    def exit_action():\n",
-    "        nonlocal running\n",
-    "        running = False\n",
-    "\n",
-    "    def load_song(new_song_path):\n",
-    "        nonlocal current_song_path, song_offset, start_time, total_pause_duration, paused, current_speed, chords, screen, db, current_transposition, original_chords, current_effective_path\n",
-    "        current_song_path = new_song_path\n",
-    "        if current_song_path not in db:\n",
-    "            db[current_song_path] = \"\"\n",
-    "            save_database(db)\n",
-    "        if use_beat_sync:\n",
-    "            chord_filename = os.path.splitext(os.path.abspath(current_song_path))[0] + \"_Chords_BEATSYNC.txt\"\n",
-    "        else:\n",
-    "            chord_filename = os.path.splitext(os.path.abspath(current_song_path))[0] + \"_Chords.txt\"\n",
-    "        print(f\"Loading song: {current_song_path}\")\n",
-    "        sys.stdout.flush()\n",
-    "        if not os.path.exists(chord_filename):\n",
-    "            extraction_screen = pygame.display.set_mode((400, 200))\n",
-    "            pygame.display.set_caption(\"Extracting Chords\")\n",
-    "            extraction_font = pygame.font.Font(None, 36)\n",
-    "            extraction_text = extraction_font.render(\"Extracting Chords\", True, (255, 255, 255))\n",
-    "            extraction_rect = extraction_text.get_rect(center=(200, 100))\n",
-    "            extraction_screen.fill((0, 0, 0))\n",
-    "            extraction_screen.blit(extraction_text, extraction_rect)\n",
-    "            pygame.display.flip()\n",
-    "            extraction_done = threading.Event()\n",
-    "            def extraction_task():\n",
-    "                try:\n",
-    "                    new_chords = extract_chords(current_song_path, beat_sync=use_beat_sync, hop_length=hop_length)\n",
-    "                    if not new_chords:\n",
-    "                        new_chords = [(0.0, \"???\")]\n",
-    "                    chords[:] = new_chords\n",
-    "                    save_chords_to_file(new_chords, chord_filename)\n",
-    "                    print(f\"Extraction finished, saved to {chord_filename}\")\n",
-    "                    db[current_song_path] = chord_filename\n",
-    "                    save_database(db)\n",
-    "                except Exception as e:\n",
-    "                    print(\"Error extracting chords:\", e)\n",
-    "                    chords[:] = []\n",
-    "                extraction_done.set()\n",
-    "            t = threading.Thread(target=extraction_task, daemon=True)\n",
-    "            t.start()\n",
-    "            while not extraction_done.is_set():\n",
-    "                for event in pygame.event.get():\n",
-    "                    if event.type == pygame.QUIT:\n",
-    "                        pygame.quit()\n",
-    "                        return\n",
-    "                extraction_screen.fill((0, 0, 0))\n",
-    "                extraction_screen.blit(extraction_text, extraction_rect)\n",
-    "                pygame.display.flip()\n",
-    "                time.sleep(0.1)\n",
-    "        else:\n",
-    "            try:\n",
-    "                chords[:] = load_chords_from_file(chord_filename)\n",
-    "            except Exception as e:\n",
-    "                print(\"Error loading chords from file:\", e)\n",
-    "                chords[:] = []\n",
-    "        original_chords = chords.copy()\n",
-    "        current_transposition = 0\n",
-    "        current_effective_path = current_song_path\n",
-    "        update_file_manager()\n",
-    "        screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))\n",
-    "        pygame.display.set_caption(\"Player Mode\")\n",
-    "        song_offset = 0.0\n",
-    "        start_time = time.time()\n",
-    "        total_pause_duration = 0.0\n",
-    "        paused = False\n",
-    "        current_speed = 1.0\n",
-    "        pygame.mixer.music.load(current_song_path)\n",
-    "        pygame.mixer.music.play()\n",
-    "\n",
-    "    def delete_file(file):\n",
-    "        nonlocal db\n",
-    "        if file in db:\n",
-    "            del db[file]\n",
-    "            save_database(db)\n",
-    "        update_file_manager()\n",
-    "\n",
-    "    file_widgets = []\n",
-    "    update_file_manager()\n",
-    "\n",
-    "    while running:\n",
-    "        screen.fill((80, 80, 80))\n",
-    "        pygame.draw.rect(screen, (50, 50, 50), (0, 0, FILE_PANEL_WIDTH, WINDOW_HEIGHT))\n",
-    "        pygame.draw.rect(screen, (70, 70, 70), (FILE_PANEL_WIDTH, 0, RIGHT_WIDTH, RIGHT_TOP_HEIGHT))\n",
-    "        pygame.draw.rect(screen, (90, 90, 90), (FILE_PANEL_WIDTH, RIGHT_TOP_HEIGHT, RIGHT_WIDTH, CONTROLS_HEIGHT))\n",
-    "        \n",
-    "        beat_toggle.draw(screen)\n",
-    "        beat_label.draw(screen)\n",
-    "        \n",
-    "        draw_file_manager_border(screen)\n",
-    "        screen.set_clip(file_list_area)\n",
-    "        for main_btn, delete_btn in file_widgets:\n",
-    "            main_btn.draw(screen)\n",
-    "            delete_btn.draw(screen)\n",
-    "        screen.set_clip(None)\n",
-    "        dd_field.draw(screen)\n",
-    "        search_button.draw(screen)\n",
-    "        \n",
-    "        if current_song_path is not None:\n",
-    "            draw_song_title(screen)\n",
-    "        \n",
-    "        if chords:\n",
-    "            current_time_val = get_current_time()\n",
-    "            current_index = 0\n",
-    "            for i, (t, ch) in enumerate(chords):\n",
-    "                if t > current_time_val:\n",
-    "                    break\n",
-    "                current_index = i\n",
-    "            chord_prev2 = chords[current_index-2][1] if current_index-2 >= 0 else \"?\"\n",
-    "            chord_prev1 = chords[current_index-1][1] if current_index-1 >= 0 else \"?\"\n",
-    "            chord_current = chords[current_index][1] if current_index < len(chords) else \"?\"\n",
-    "            chord_next1 = chords[current_index+1][1] if current_index+1 < len(chords) else \"?\"\n",
-    "            chord_next2 = chords[current_index+2][1] if current_index+2 < len(chords) else \"?\"\n",
-    "        else:\n",
-    "            chord_prev2 = chord_prev1 = chord_current = chord_next1 = chord_next2 = \"?\"\n",
-    "        # Ausgangswerte:\n",
-    "        r_x = FILE_PANEL_WIDTH        # Startpunkt rechts vom File-Manager\n",
-    "        r_width = RIGHT_WIDTH         # Verfügbare Breite für die Akkordanzeige\n",
-    "        \n",
-    "        # Vertikale Einteilung:\n",
-    "        # Gesamt-Höhe für die Chordanzeige ist CHORDS_HEIGHT, die oberste Position liegt bei SONG_TITLE_HEIGHT.\n",
-    "        # Wir teilen CHORDS_HEIGHT in drei Bereiche:\n",
-    "        #   - Unterer Bereich: 1/5 der Höhe, Zentrum etwa bei SONG_TITLE_HEIGHT + 0.9 * CHORDS_HEIGHT\n",
-    "        #   - Mittlerer Bereich: 1/4 der Höhe, Zentrum etwa bei SONG_TITLE_HEIGHT + 0.675 * CHORDS_HEIGHT\n",
-    "        #   - Oberer Bereich: Rest (55 %), Zentrum etwa bei SONG_TITLE_HEIGHT + 0.275 * CHORDS_HEIGHT\n",
-    "        top_segment_center    = SONG_TITLE_HEIGHT + int(0.275 * CHORDS_HEIGHT)    # Für den aktuellen Akkord\n",
-    "        middle_segment_center = SONG_TITLE_HEIGHT + int(0.675 * CHORDS_HEIGHT)    # Für den 2. und 4. Akkord\n",
-    "        bottom_segment_center = SONG_TITLE_HEIGHT + int(0.9 * CHORDS_HEIGHT)      # Für den 1. und 5. Akkord\n",
-    "        \n",
-    "        # Horizontale Positionen (wie zuvor)\n",
-    "        pos_prev2    = (r_x + int(r_width * 0.1),  bottom_segment_center)    # 1. Akkord (links)\n",
-    "        pos_prev1    = (r_x + int(r_width * 0.325), middle_segment_center)    # 2. Akkord\n",
-    "        pos_current  = (r_x + int(r_width * 0.5),   top_segment_center)       # Aktueller Akkord (Mitte)\n",
-    "        pos_next1    = (r_x + int(r_width * 0.7),   middle_segment_center)    # 4. Akkord\n",
-    "        pos_next2    = (r_x + int(r_width * 0.9),   bottom_segment_center)    # 5. Akkord (rechts)\n",
-    "\n",
-    "\n",
-    "        FontScaller = 1.8\n",
-    "        font_prev2 = pygame.font.Font(None, int(36 * FontScaller))\n",
-    "        font_prev1 = pygame.font.Font(None, int(48 * FontScaller))\n",
-    "        font_current = pygame.font.Font(None, int(72 * FontScaller))\n",
-    "        font_next1 = pygame.font.Font(None, int(48 * FontScaller))\n",
-    "        font_next2 = pygame.font.Font(None, int(36 * FontScaller))\n",
-    "        surf_prev2 = font_prev2.render(chord_prev2, True, (255, 255, 255))\n",
-    "        surf_prev1 = font_prev1.render(chord_prev1, True, (255, 255, 255))\n",
-    "        surf_current = font_current.render(chord_current, True, (255, 255, 0))\n",
-    "        surf_next1 = font_next1.render(chord_next1, True, (255, 255, 255))\n",
-    "        surf_next2 = font_next2.render(chord_next2, True, (255, 255, 255))\n",
-    "        screen.blit(surf_prev2, surf_prev2.get_rect(center=pos_prev2))\n",
-    "        screen.blit(surf_prev1, surf_prev1.get_rect(center=pos_prev1))\n",
-    "        screen.blit(surf_current, surf_current.get_rect(center=pos_current))\n",
-    "        screen.blit(surf_next1, surf_next1.get_rect(center=pos_next1))\n",
-    "        screen.blit(surf_next2, surf_next2.get_rect(center=pos_next2))\n",
-    "        \n",
-    "        time_area_rect = pygame.Rect(FILE_PANEL_WIDTH, SONG_TITLE_HEIGHT + CHORDS_HEIGHT, RIGHT_WIDTH, TIME_HEIGHT)\n",
-    "        pygame.draw.rect(screen, (30, 30, 30), time_area_rect)\n",
-    "        time_text = f\"Time: {get_current_time():.2f}s   Speed: {current_speed:.1f}   Volume: {volume:.1f}   Transpose: {current_transposition}\"\n",
-    "        time_surf = pygame.font.Font(None, 28).render(time_text, True, (255, 255, 255))\n",
-    "        screen.blit(time_surf, time_surf.get_rect(center=time_area_rect.center))\n",
-    "        \n",
-    "        for btn in additional_controls:\n",
-    "            btn.draw(screen)\n",
-    "        for btn in control_buttons:\n",
-    "            btn.draw(screen)\n",
-    "        trans_up_btn.draw(screen)\n",
-    "        trans_down_btn.draw(screen)\n",
-    "        \n",
-    "        for event in pygame.event.get():\n",
-    "            if event.type == pygame.QUIT:\n",
-    "                running = False\n",
-    "            elif event.type == pygame.DROPFILE:\n",
-    "                load_song(event.file)\n",
-    "            elif event.type == pygame.MOUSEWHEEL:\n",
-    "                scroll_offset += event.y * 20\n",
-    "                scroll_offset = min(0, scroll_offset)\n",
-    "                max_scroll = -max(0, (len(file_widgets) * 40) - file_list_area.height)\n",
-    "                scroll_offset = max(max_scroll, scroll_offset)\n",
-    "                last_scroll_time = pygame.time.get_ticks()\n",
-    "                update_file_manager()\n",
-    "            elif event.type == pygame.MOUSEBUTTONDOWN:\n",
-    "                if event.button != 1:\n",
-    "                    continue\n",
-    "                if pygame.time.get_ticks() - last_scroll_time < 300:\n",
-    "                    continue\n",
-    "                pos = pygame.mouse.get_pos()\n",
-    "                scrollbar_rect = pygame.Rect(FILE_PANEL_WIDTH - 10, file_list_area.top, 10, file_list_area.height)\n",
-    "                if scrollbar_rect.collidepoint(pos):\n",
-    "                    scrollbar_dragging = True\n",
-    "                    drag_offset = pos[1] - scrollbar_rect.y\n",
-    "                elif pos[0] < FILE_PANEL_WIDTH:\n",
-    "                    for main_btn, del_btn in file_widgets:\n",
-    "                        if main_btn.is_clicked(pos):\n",
-    "                            main_btn.action()\n",
-    "                        elif del_btn.is_clicked(pos):\n",
-    "                            del_btn.action()\n",
-    "                    if beat_toggle.is_clicked(pos):\n",
-    "                        beat_toggle.action()\n",
-    "                    if search_button.is_clicked(pos):\n",
-    "                        search_button.action()\n",
-    "                else:\n",
-    "                    for btn in control_buttons:\n",
-    "                        if btn.is_clicked(pos):\n",
-    "                            btn.action()\n",
-    "                    for btn in additional_controls:\n",
-    "                        if btn.is_clicked(pos):\n",
-    "                            btn.action()\n",
-    "                    if trans_up_btn.is_clicked(pos):\n",
-    "                        trans_up_btn.action()\n",
-    "                    elif trans_down_btn.is_clicked(pos):\n",
-    "                        trans_down_btn.action()\n",
-    "            elif event.type == pygame.MOUSEBUTTONUP:\n",
-    "                scrollbar_dragging = False\n",
-    "            elif event.type == pygame.MOUSEMOTION:\n",
-    "                if 'scrollbar_dragging' in locals() and scrollbar_dragging:\n",
-    "                    mouse_y = event.pos[1]\n",
-    "                    new_thumb_y = mouse_y - drag_offset - file_list_area.top\n",
-    "                    total_content_height = len(file_widgets) * 40\n",
-    "                    if total_content_height > file_list_area.height:\n",
-    "                        max_scroll = total_content_height - file_list_area.height\n",
-    "                        new_scroll = - (new_thumb_y / (file_list_area.height - (file_list_area.height * file_list_area.height / total_content_height))) * max_scroll\n",
-    "                        scroll_offset = int(new_scroll)\n",
-    "                        scroll_offset = min(0, scroll_offset)\n",
-    "                        scroll_offset = max(-max_scroll, scroll_offset)\n",
-    "                        update_file_manager()\n",
-    "        pygame.display.flip()\n",
-    "        clock.tick(30)\n",
-    "    \n",
-    "    pygame.mixer.music.stop()\n",
-    "    pygame.quit()\n",
-    "\n",
-    "def cleanup_temp_files():\n",
-    "    # Löscht alle Files aus der Liste temp_speed_files\n",
-    "    for file in temp_speed_files:\n",
-    "        if os.path.exists(file):\n",
-    "            try:\n",
-    "                os.remove(file)\n",
-    "            except Exception as e:\n",
-    "                print(f\"Error cleaning {file}: {e}\")\n",
-    "    # Löscht die transponierte Datei aus dem Systemtemp-Verzeichnis\n",
-    "    temp_transposed = os.path.join(tempfile.gettempdir(), \"temp_transposed.wav\")\n",
-    "    if os.path.exists(temp_transposed):\n",
-    "        try:\n",
-    "            os.remove(temp_transposed)\n",
-    "        except Exception as e:\n",
-    "            print(f\"Error cleaning temp_transposed.wav: {e}\")\n",
-    "\n",
-    "if __name__ == \"__main__\":\n",
-    "    try:\n",
-    "        initial_file = None\n",
-    "        chords = []\n",
-    "        last_scroll_time = 0\n",
-    "        player_mode_gui(chords, initial_file)\n",
-    "    finally:\n",
-    "        cleanup_temp_files()\n"
-   ]
-  },
-  {
-   "cell_type": "code",
-   "execution_count": 3,
-   "id": "47b33809-dfe6-49b2-880d-ffba3eb82603",
-   "metadata": {},
-   "outputs": [
-    {
-     "name": "stdout",
-     "output_type": "stream",
-     "text": [
-      "Loading song: C:/Users/abcde/Documents/Skripte/Fly.wav\n",
-      "Chords loaded from C:\\Users\\abcde\\Documents\\Skripte\\Fly_Chords_BEATSYNC.txt\n",
-      "Fehler beim Aufruf von ffmpeg: Command '['C:\\\\Users\\\\abcde\\\\Downloads\\\\ffmpeg-7.1-full_build\\\\ffmpeg-7.1-full_build\\\\bin\\\\ffmpeg.exe', '-y', '-ss', '0', '-i', 'C:/Users/abcde/Documents/Skripte/Fly.wav', '-filter:a', 'atempo=0.8', '-vn', 'temp_speed_changed.wav']' returned non-zero exit status 4294967283.\n"
-     ]
-    }
-   ],
-   "source": [
-    "import os\n",
-    "import sys\n",
-    "import time\n",
-    "import subprocess\n",
-    "import threading\n",
-    "import json\n",
-    "import uuid\n",
-    "import tempfile\n",
-    "import numpy as np\n",
-    "import soundfile as sf\n",
-    "import librosa\n",
-    "import pygame\n",
-    "import tkinter as tk\n",
-    "from tkinter.filedialog import askopenfilename\n",
-    "\n",
-    "# Pfad zu ffmpeg (bitte anpassen!)\n",
-    "FFMPEG_PATH = r'C:\\Users\\abcde\\Downloads\\ffmpeg-7.1-full_build\\ffmpeg-7.1-full_build\\bin\\ffmpeg.exe'\n",
-    "DB_FILE = \"songs_db.json\"\n",
-    "temp_speed_files = []\n",
-    "\n",
-    "# ---------------------------\n",
-    "# Datenbankfunktionen\n",
-    "# ---------------------------\n",
-    "def load_database():\n",
-    "    if os.path.exists(DB_FILE):\n",
-    "        with open(DB_FILE, 'r', encoding='utf-8') as f:\n",
-    "            return json.load(f)\n",
-    "    return {}\n",
-    "\n",
-    "def save_database(db):\n",
-    "    with open(DB_FILE, 'w', encoding='utf-8') as f:\n",
-    "        json.dump(db, f, indent=2)\n",
-    "\n",
-    "# ---------------------------\n",
-    "# Funktionen zum Speichern/Laden der Chordliste\n",
-    "# ---------------------------\n",
-    "def save_chords_to_file(chords, filename):\n",
-    "    with open(filename, 'w', encoding='utf-8') as f:\n",
-    "        for t, ch in chords:\n",
-    "            f.write(f\"{t}\\t{ch}\\n\")\n",
-    "    print(f\"Chords saved to {filename}\")\n",
-    "    sys.stdout.flush()\n",
-    "\n",
-    "def load_chords_from_file(filename):\n",
-    "    chords = []\n",
-    "    with open(filename, 'r', encoding='utf-8') as f:\n",
-    "        for line in f:\n",
-    "            line = line.strip()\n",
-    "            if line:\n",
-    "                parts = line.split('\\t')\n",
-    "                if len(parts) >= 2:\n",
-    "                    try:\n",
-    "                        t = float(parts[0])\n",
-    "                        ch = parts[1]\n",
-    "                        chords.append((t, ch))\n",
-    "                    except Exception as e:\n",
-    "                        print(\"Error parsing line:\", line, e)\n",
-    "    print(f\"Chords loaded from {filename}\")\n",
-    "    sys.stdout.flush()\n",
-    "    return chords\n",
-    "\n",
-    "# ---------------------------\n",
-    "# Audioverarbeitung und Akkorderkennung\n",
-    "# ---------------------------\n",
-    "def convert_mp3_to_wav(file_path):\n",
-    "    if file_path.lower().endswith('.mp3'):\n",
-    "        abs_file_path = os.path.abspath(file_path)\n",
-    "        wav_path = os.path.splitext(abs_file_path)[0] + \".wav\"\n",
-    "        if not os.path.exists(abs_file_path):\n",
-    "            raise FileNotFoundError(f\"File {abs_file_path} not found.\")\n",
-    "        subprocess.run([FFMPEG_PATH, '-i', abs_file_path, wav_path], check=True)\n",
-    "        if not os.path.exists(wav_path):\n",
-    "            raise FileNotFoundError(f\"WAV file {wav_path} not created.\")\n",
-    "        return wav_path\n",
-    "    return file_path\n",
-    "\n",
-    "def clean_path(file_path):\n",
-    "    return file_path.strip('\"')\n",
-    "\n",
-    "def detect_chord(chroma_column):\n",
-    "    if len(chroma_column) != 12:\n",
-    "        chroma_column = np.resize(chroma_column, (12,))\n",
-    "    chord_templates = {\n",
-    "        '':   np.array([1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0]),\n",
-    "        'm':   np.array([1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0]),\n",
-    "        'sus2':  np.array([1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]),\n",
-    "        'sus4':  np.array([1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0]),\n",
-    "        '7':     np.array([1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0]),\n",
-    "        'maj7':  np.array([1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1]),\n",
-    "        'm7':  np.array([1, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0]),\n",
-    "        '9':     np.array([1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1])\n",
-    "    }\n",
-    "    chord_labels = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']\n",
-    "    best_score = -np.inf\n",
-    "    best_chord = \"N.C.\"\n",
-    "    norm = np.linalg.norm(chroma_column)\n",
-    "    chroma_norm = chroma_column / norm if norm > 0 else chroma_column\n",
-    "    for i in range(12):\n",
-    "        for quality, template in chord_templates.items():\n",
-    "            template_rotated = np.roll(template, i)\n",
-    "            t_norm = np.linalg.norm(template_rotated)\n",
-    "            template_norm = template_rotated / t_norm if t_norm > 0 else template_rotated\n",
-    "            score = np.dot(chroma_norm, template_norm)\n",
-    "            if score > best_score:\n",
-    "                best_score = score\n",
-    "                best_chord = chord_labels[i] + quality\n",
-    "    return best_chord\n",
-    "\n",
-    "def extract_chords(file_path, beat_sync=False, hop_length=512):\n",
-    "    file_path = clean_path(file_path)\n",
-    "    file_path = convert_mp3_to_wav(file_path)\n",
-    "    abs_file_path = os.path.abspath(file_path)\n",
-    "    if not os.path.exists(abs_file_path):\n",
-    "        raise FileNotFoundError(f\"File {abs_file_path} not found.\")\n",
-    "    y, sr = sf.read(abs_file_path)\n",
-    "    y = y[:, 0] if y.ndim > 1 else y\n",
-    "    y_harmonic, y_percussive = librosa.effects.hpss(y)\n",
-    "    chromagram = librosa.feature.chroma_cqt(y=y_harmonic, sr=sr, hop_length=hop_length, n_chroma=12)\n",
-    "    if beat_sync:\n",
-    "        tempo, beats = librosa.beat.beat_track(y=y_percussive, sr=sr, hop_length=hop_length)\n",
-    "        chroma_sync = librosa.util.sync(chromagram, beats, aggregate=np.mean)\n",
-    "        print(\"Chroma_sync shape before check:\", chroma_sync.shape)\n",
-    "        sys.stdout.flush()\n",
-    "        if chroma_sync.shape[0] > 12:\n",
-    "            chroma_sync = chroma_sync[:12, :]\n",
-    "        elif chroma_sync.shape[0] < 12:\n",
-    "            pad_width = 12 - chroma_sync.shape[0]\n",
-    "            chroma_sync = np.pad(chroma_sync, ((0, pad_width), (0, 0)), mode='constant')\n",
-    "        print(\"Chroma_sync shape after check:\", chroma_sync.shape)\n",
-    "        sys.stdout.flush()\n",
-    "        times = librosa.frames_to_time(beats[:-1], sr=sr, hop_length=hop_length)\n",
-    "    else:\n",
-    "        chroma_sync = chromagram\n",
-    "        times = librosa.frames_to_time(np.arange(chromagram.shape[1]), sr=sr, hop_length=hop_length)\n",
-    "    chord_sequence = [detect_chord(np.resize(chroma_sync[:, i], (12,))) for i in range(chroma_sync.shape[1])]\n",
-    "    simplified_chords = []\n",
-    "    timestamps = []\n",
-    "    prev_chord = None\n",
-    "    for i, chord in enumerate(chord_sequence):\n",
-    "        if chord != prev_chord:\n",
-    "            simplified_chords.append(chord)\n",
-    "            if i < len(times):\n",
-    "                timestamps.append(times[i])\n",
-    "            prev_chord = chord\n",
-    "    print(\"Extraction finished. Number of chords found:\", len(simplified_chords))\n",
-    "    sys.stdout.flush()\n",
-    "    return list(zip(timestamps, simplified_chords))\n",
-    "\n",
-    "def get_song_duration(audio_file):\n",
-    "    import librosa\n",
-    "    y, sr = librosa.load(audio_file, sr=None)\n",
-    "    return len(y) / sr\n",
-    "\n",
-    "def change_playback_speed(audio_file, speed, start_offset):\n",
-    "    # Songdauer ermitteln\n",
-    "    duration = get_song_duration(audio_file)\n",
-    "    if start_offset >= duration:\n",
-    "        # Setze den Offset auf 0.1 Sekunden vor dem Ende\n",
-    "        start_offset = max(0, duration - 0.1)\n",
-    "    \n",
-    "    temp_file = 'temp_speed_changed.wav'\n",
-    "    if pygame.mixer.music.get_busy():\n",
-    "        pygame.mixer.music.stop()\n",
-    "        pygame.mixer.music.unload()\n",
-    "    if os.path.exists(temp_file):\n",
-    "        try:\n",
-    "            os.remove(temp_file)\n",
-    "        except PermissionError:\n",
-    "            pass\n",
-    "    try:\n",
-    "        subprocess.run([\n",
-    "            FFMPEG_PATH, '-y', '-ss', str(start_offset), '-i', audio_file,\n",
-    "            '-filter:a', f'atempo={speed}', '-vn', temp_file\n",
-    "        ], check=True)\n",
-    "    except subprocess.CalledProcessError as e:\n",
-    "        print(\"Fehler beim Aufruf von ffmpeg:\", e)\n",
-    "        # Hier könnten Sie beispielsweise die Wiedergabe beenden oder einen alternativen Offset setzen\n",
-    "        return\n",
-    "    try:\n",
-    "        pygame.mixer.music.load(temp_file)\n",
-    "        pygame.mixer.music.play()\n",
-    "        temp_speed_files.append(temp_file)\n",
-    "    except Exception as e:\n",
-    "        print(\"Fehler beim Laden oder Abspielen der Datei:\", e)\n",
-    "\n",
-    "    \n",
-    "# ---------------------------\n",
-    "# Angepasste Transpositionsfunktionen\n",
-    "# ---------------------------\n",
-    "def transpose_audio_file(song_path, n_steps):\n",
-    "    # Speichere das transponierte Audio im Systemtemp-Verzeichnis\n",
-    "    temp_file = os.path.join(tempfile.gettempdir(), \"temp_transposed.wav\")\n",
-    "    if os.path.exists(temp_file):\n",
-    "        try:\n",
-    "            os.remove(temp_file)\n",
-    "        except PermissionError:\n",
-    "            pass\n",
-    "    y, sr = librosa.load(song_path, sr=None)\n",
-    "    y_transposed = librosa.effects.pitch_shift(y, sr=sr, n_steps=n_steps)\n",
-    "    sf.write(temp_file, y_transposed, sr)\n",
-    "    return temp_file\n",
-    "\n",
-    "def transpose_chord(chord, n_steps):\n",
-    "    chord_labels = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']\n",
-    "    if chord not in chord_labels:\n",
-    "        return chord\n",
-    "    idx = chord_labels.index(chord)\n",
-    "    new_idx = (idx + n_steps) % 12\n",
-    "    return chord_labels[new_idx]\n",
-    "\n",
-    "# ---------------------------\n",
-    "# Erweiterte Button-Klasse mit Bildunterstützung\n",
-    "# ---------------------------\n",
-    "class Button:\n",
-    "    def __init__(self, rect, color, text, text_color, action, image_path=None, max_width=None, initial_font_size=36):\n",
-    "        self.rect = pygame.Rect(rect)\n",
-    "        self.color = color\n",
-    "        self.text = text\n",
-    "        self.text_color = text_color\n",
-    "        self.action = action\n",
-    "        self.image = None\n",
-    "        if image_path is not None:\n",
-    "            # Verwenden Sie den relativen Pfad. Unter Windows empfiehlt sich ein Rohstring oder doppelte Backslashes.\n",
-    "            self.image = pygame.image.load(image_path).convert_alpha()\n",
-    "            self.image = pygame.transform.scale(self.image, (self.rect.width, self.rect.height))\n",
-    "        if max_width is not None:\n",
-    "            size = initial_font_size\n",
-    "            self.font = pygame.font.Font(None, size)\n",
-    "            while self.font.size(text)[0] > max_width and size > 10:\n",
-    "                size -= 1\n",
-    "                self.font = pygame.font.Font(None, size)\n",
-    "        else:\n",
-    "            self.font = pygame.font.Font(None, initial_font_size)\n",
-    "    def draw(self, surface):\n",
-    "        pygame.draw.rect(surface, self.color, self.rect)\n",
-    "        pygame.draw.rect(surface, (0,0,0), self.rect, 1)\n",
-    "        if self.image is not None:\n",
-    "            surface.blit(self.image, self.rect)\n",
-    "        else:\n",
-    "            txt_surf = self.font.render(self.text, True, self.text_color)\n",
-    "            txt_rect = txt_surf.get_rect(center=self.rect.center)\n",
-    "            surface.blit(txt_surf, txt_rect)\n",
-    "    def is_clicked(self, pos):\n",
-    "        return self.rect.collidepoint(pos)\n",
-    "\n",
-    "# ---------------------------\n",
-    "# Datei-Auswahldialog (Tkinter)\n",
-    "# ---------------------------\n",
-    "def search_file():\n",
-    "    root = tk.Tk()\n",
-    "    root.withdraw()\n",
-    "    filename = askopenfilename(title=\"Select a file\", filetypes=[(\"Audio Files\", \"*.mp3 *.wav\")])\n",
-    "    root.destroy()\n",
-    "    return filename\n",
-    "\n",
-    "# ---------------------------\n",
-    "# Haupt-GUI\n",
-    "# ---------------------------\n",
-    "def player_mode_gui(chords, initial_song_path=None):\n",
-    "    pygame.init()\n",
-    "    pygame.event.set_allowed([pygame.QUIT, pygame.MOUSEBUTTONDOWN, pygame.DROPFILE,\n",
-    "                              pygame.MOUSEWHEEL, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION])\n",
-    "    WINDOW_WIDTH, WINDOW_HEIGHT = 1000, 600\n",
-    "    screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))\n",
-    "    pygame.display.set_caption(\"Player Mode\")\n",
-    "    clock = pygame.time.Clock()\n",
-    "\n",
-    "    db = load_database()\n",
-    "\n",
-    "    SONG_TITLE_HEIGHT = 40\n",
-    "    RIGHT_TOP_HEIGHT = 400\n",
-    "    CHORDS_HEIGHT = int(RIGHT_TOP_HEIGHT * 0.75) - SONG_TITLE_HEIGHT\n",
-    "    TIME_HEIGHT = RIGHT_TOP_HEIGHT - (CHORDS_HEIGHT + SONG_TITLE_HEIGHT)\n",
-    "    CONTROLS_HEIGHT = WINDOW_HEIGHT - RIGHT_TOP_HEIGHT\n",
-    "\n",
-    "    FILE_PANEL_WIDTH = 250\n",
-    "    RIGHT_WIDTH = WINDOW_WIDTH - FILE_PANEL_WIDTH\n",
-    "\n",
-    "    current_speed = 1.0\n",
-    "    song_offset = 0.0\n",
-    "    start_time = 0.0\n",
-    "    total_pause_duration = 0.0\n",
-    "    paused = False\n",
-    "    volume = 0.5\n",
-    "    hop_length = 512\n",
-    "\n",
-    "    # Variable für den aktuell abgespielten (effektiven) Audiopfad\n",
-    "    current_effective_path = initial_song_path\n",
-    "\n",
-    "    # Transpositionsvariablen\n",
-    "    current_transposition = 0\n",
-    "    original_chords = []\n",
-    "\n",
-    "    pygame.mixer.init()\n",
-    "    pygame.mixer.music.set_volume(volume)\n",
-    "    current_song_path = initial_song_path\n",
-    "\n",
-    "    use_beat_sync = True\n",
-    "\n",
-    "    scroll_offset = 5\n",
-    "    margin_top = 0\n",
-    "    margin_bottom = 30\n",
-    "    file_list_area = pygame.Rect(0, 50 + margin_top, FILE_PANEL_WIDTH, WINDOW_HEIGHT - 50 - 80 - margin_bottom)\n",
-    "\n",
-    "    # File Manager: BeatSync-Buttons\n",
-    "    beat_toggle_rect = (10, 10, 30, 30)\n",
-    "    def toggle_beat_sync():\n",
-    "        nonlocal use_beat_sync, beat_toggle\n",
-    "        use_beat_sync = not use_beat_sync\n",
-    "        beat_toggle.text = \"X\" if use_beat_sync else \"\"\n",
-    "    beat_toggle = Button(beat_toggle_rect, (128, 128, 128), \"X\", (0, 0, 0), toggle_beat_sync)\n",
-    "    beat_label = Button((50, 10, 100, 30), (80, 80, 80), \"BeatSync\", (255, 255, 255), lambda: None)\n",
-    "\n",
-    "    file_widgets = []\n",
-    "    def update_file_manager():\n",
-    "        nonlocal file_widgets, db, scroll_offset\n",
-    "        folder_files = [os.path.join(os.getcwd(), f) for f in os.listdir('.') if f.lower().endswith(('.mp3','.wav'))]\n",
-    "        db_files = list(db.keys())\n",
-    "        all_files = list(set(folder_files + db_files))\n",
-    "        all_files.sort()\n",
-    "        file_widgets.clear()\n",
-    "        for idx, file in enumerate(all_files):\n",
-    "            main_rect = (10, file_list_area.top + idx * 40 + scroll_offset, FILE_PANEL_WIDTH - 20 - 25, 30)\n",
-    "            delete_rect = (10 + (FILE_PANEL_WIDTH - 20 - 25), file_list_area.top + idx * 40 + scroll_offset, 25, 30)\n",
-    "            main_btn = Button(main_rect, (211, 211, 211), os.path.basename(file), (0, 0, 0),\n",
-    "                              lambda f=file: load_song(f),\n",
-    "                              max_width=FILE_PANEL_WIDTH - 20 - 25, initial_font_size=36)\n",
-    "            delete_btn = Button(delete_rect, (150, 0, 0), \"X\", (255, 255, 255),\n",
-    "                                lambda f=file: delete_file(f),\n",
-    "                                max_width=25, initial_font_size=24)\n",
-    "            file_widgets.append((main_btn, delete_btn))\n",
-    "    update_file_manager()\n",
-    "\n",
-    "    search_button_rect = (10, WINDOW_HEIGHT - 40, FILE_PANEL_WIDTH - 20, 30)\n",
-    "    search_button = Button(search_button_rect, (180, 211, 211), \"Search File\", (0, 0, 0),\n",
-    "                           lambda: load_song(search_file()),\n",
-    "                           max_width=FILE_PANEL_WIDTH - 20, initial_font_size=36)\n",
-    "    dd_field_rect = (10, WINDOW_HEIGHT - 100, FILE_PANEL_WIDTH -20 , 50)\n",
-    "    dd_field = Button(dd_field_rect, (100, 180, 180), \"Drag & Drop File\", (50, 50, 50),\n",
-    "                      lambda: None, max_width=FILE_PANEL_WIDTH - 20, initial_font_size=24)\n",
-    "\n",
-    "    def draw_file_manager_border(surface):\n",
-    "        pygame.draw.rect(surface, (0, 0, 0), file_list_area, 2)\n",
-    "\n",
-    "    def draw_song_title(surface):\n",
-    "        if current_song_path is not None:\n",
-    "            song_name = os.path.basename(current_song_path)\n",
-    "            title_text = \"Song: \" + song_name\n",
-    "            title_font = pygame.font.Font(None, 36)\n",
-    "            title_surf = title_font.render(title_text, True, (200, 255, 255))\n",
-    "            title_rect = title_surf.get_rect(midleft=(FILE_PANEL_WIDTH + 10, SONG_TITLE_HEIGHT // 2))\n",
-    "            surface.blit(title_surf, title_rect)\n",
-    "\n",
-    "    # ---------------------------\n",
-    "    # Definition der Steuerelement-Buttons mit Icons\n",
-    "    # ---------------------------\n",
-    "    # --- Neuer Steuerbereich in 2 Ebenen ---\n",
-    "\n",
-    "    # Festlegung der Button-Größen und -Abstände\n",
-    "    BUTTON_WIDTH = 80\n",
-    "    BUTTON_HEIGHT = 80\n",
-    "    # Berechnen Sie den horizontalen Abstand: Es gibt 5 Buttons und 6 Zwischenräume\n",
-    "    gap = (RIGHT_WIDTH - 5 * BUTTON_WIDTH) // 6\n",
-    "    \n",
-    "    # Bestimmen Sie die Y-Positionen für die zwei Ebenen\n",
-    "    row1_y = RIGHT_TOP_HEIGHT + gap/5         # obere Zeile\n",
-    "    row2_y = RIGHT_TOP_HEIGHT + BUTTON_HEIGHT + 2 * gap/5  # untere Zeile\n",
-    "    \n",
-    "    # Bestimmen Sie den Startpunkt (X) für beide Zeilen\n",
-    "    row_start_x = FILE_PANEL_WIDTH + gap\n",
-    "    \n",
-    "    # Obere Zeile (Row 1)\n",
-    "    row1_buttons = [\n",
-    "        Button(\n",
-    "            (row_start_x + 0 * (BUTTON_WIDTH + gap), row1_y, BUTTON_WIDTH, BUTTON_HEIGHT),\n",
-    "            (255, 255, 255), \"\",\n",
-    "            (0, 0, 0), lambda: louder_action(),\n",
-    "            image_path=r\"resources\\Louder.png\"\n",
-    "        ),\n",
-    "\n",
-    "        Button(\n",
-    "            (row_start_x + 1 * (BUTTON_WIDTH + gap), row1_y, BUTTON_WIDTH, BUTTON_HEIGHT),\n",
-    "            (255, 255, 255), \"\",\n",
-    "            (0, 0, 0), lambda: back_action(),\n",
-    "            image_path=r\"resources\\Backward.jpg\"\n",
-    "        ),\n",
-    "\n",
-    "        \n",
-    "        Button(\n",
-    "            (row_start_x + 2 * (BUTTON_WIDTH + gap), row1_y, BUTTON_WIDTH, BUTTON_HEIGHT),\n",
-    "            (0, 150, 0), \"\",\n",
-    "            (0, 0, 0), lambda: toggle_pause(),\n",
-    "            image_path=r\"resources\\PlayPause.png\"\n",
-    "        ),\n",
-    "        \n",
-    "     \n",
-    "        Button(\n",
-    "            (row_start_x + 3 * (BUTTON_WIDTH + gap), row1_y, BUTTON_WIDTH, BUTTON_HEIGHT),\n",
-    "            (255, 255, 255), \"\",\n",
-    "            (0, 0, 0), lambda: forward_action(),\n",
-    "            image_path=r\"resources\\Forward.png\"\n",
-    "        ),\n",
-    "        Button(\n",
-    "            (row_start_x + 4 * (BUTTON_WIDTH + gap), row1_y, BUTTON_WIDTH, BUTTON_HEIGHT),\n",
-    "            (255, 255, 255), \"\",\n",
-    "            (255, 255, 255), lambda: transpose_up_action(),\n",
-    "            image_path=r\"resources\\TransposeUp.jpg\"\n",
-    "        )\n",
-    "    ]\n",
-    "    \n",
-    "    # Untere Zeile (Row 2)\n",
-    "    row2_buttons = [\n",
-    "        Button(\n",
-    "            (row_start_x + 0 * (BUTTON_WIDTH + gap), row2_y, BUTTON_WIDTH, BUTTON_HEIGHT),\n",
-    "            (255, 255, 255), \"\",\n",
-    "            (200, 200, 200), lambda: quieter_action(),\n",
-    "            image_path=r\"resources\\Quieter.png\"\n",
-    "        ),         \n",
-    "\n",
-    "        Button(\n",
-    "            (row_start_x + 1 * (BUTTON_WIDTH + gap), row2_y, BUTTON_WIDTH, BUTTON_HEIGHT),\n",
-    "            (255, 255, 255), \"\",\n",
-    "            (200, 200, 200), lambda: slower_action(),\n",
-    "            image_path=r\"resources\\slow.png\"\n",
-    "        ),\n",
-    "\n",
-    "        Button(\n",
-    "            (row_start_x + 2 * (BUTTON_WIDTH + gap), row2_y, BUTTON_WIDTH, BUTTON_HEIGHT),\n",
-    "            (255, 0, 0), \"\",\n",
-    "            (255, 255, 255), lambda: repeat_song(),\n",
-    "            image_path=r\"resources\\Repeat.png\"\n",
-    "        ),\n",
-    "\n",
-    "\n",
-    "        Button(\n",
-    "            (row_start_x + 3 * (BUTTON_WIDTH + gap), row2_y, BUTTON_WIDTH, BUTTON_HEIGHT),\n",
-    "            (255, 255, 255), \"\",\n",
-    "            (0, 0, 0), lambda: faster_action(),\n",
-    "            image_path=r\"resources\\fast.png\"\n",
-    "        ),\n",
-    "        \n",
-    "        Button(\n",
-    "            (row_start_x + 4 * (BUTTON_WIDTH + gap), row2_y, BUTTON_WIDTH, BUTTON_HEIGHT),\n",
-    "            (255, 255, 255), \"\",\n",
-    "            (255, 255, 255), lambda: transpose_down_action(),\n",
-    "            image_path=r\"resources\\TransposeDown.jpg\"\n",
-    "        )\n",
-    "    ]\n",
-    "\n",
-    "    \n",
-    "    # ---------------------------\n",
-    "    # Zeitanzeige (Time/Speed/Volume/Transpose)\n",
-    "    # ---------------------------\n",
-    "    def get_current_time():\n",
-    "        if current_song_path is None:\n",
-    "            return 0.0\n",
-    "        if paused:\n",
-    "            return (pause_start_time - start_time - total_pause_duration) * current_speed + song_offset\n",
-    "        else:\n",
-    "            return (time.time() - start_time - total_pause_duration) * current_speed + song_offset\n",
-    "    pause_start_time = 0.0\n",
-    "\n",
-    "    # ---------------------------\n",
-    "    # Wiedergabesteuerung-Funktionen\n",
-    "    # ---------------------------\n",
-    "    def toggle_pause():\n",
-    "        nonlocal paused, total_pause_duration, start_time, pause_start_time\n",
-    "        if current_song_path is None:\n",
-    "            return\n",
-    "        if paused:\n",
-    "            pygame.mixer.music.unpause()\n",
-    "            paused = False\n",
-    "            total_pause_duration += time.time() - pause_start_time\n",
-    "        else:\n",
-    "            pygame.mixer.music.pause()\n",
-    "            paused = True\n",
-    "            pause_start_time = time.time()\n",
-    "\n",
-    "    def repeat_song():\n",
-    "        nonlocal song_offset, start_time, total_pause_duration, current_effective_path\n",
-    "        if current_song_path is None:\n",
-    "            return\n",
-    "        song_offset = 0.0\n",
-    "        start_time = time.time()\n",
-    "        total_pause_duration = 0.0\n",
-    "        pygame.mixer.music.stop()\n",
-    "        pygame.mixer.music.load(current_effective_path)\n",
-    "        pygame.mixer.music.play()\n",
-    "\n",
-    "    def slower_action():\n",
-    "        nonlocal current_speed, song_offset, start_time, total_pause_duration\n",
-    "        if current_song_path is None:\n",
-    "            return\n",
-    "        cur_time = get_current_time()\n",
-    "        current_speed = max(0.5, current_speed - 0.1)\n",
-    "        change_playback_speed(current_effective_path, current_speed, cur_time)\n",
-    "        song_offset = cur_time\n",
-    "        start_time = time.time()\n",
-    "        total_pause_duration = 0.0\n",
-    "\n",
-    "    def faster_action():\n",
-    "        nonlocal current_speed, song_offset, start_time, total_pause_duration\n",
-    "        if current_song_path is None:\n",
-    "            return\n",
-    "        cur_time = get_current_time()\n",
-    "        current_speed = min(2.0, current_speed + 0.1)\n",
-    "        change_playback_speed(current_effective_path, current_speed, cur_time)\n",
-    "        song_offset = cur_time\n",
-    "        start_time = time.time()\n",
-    "        total_pause_duration = 1.0\n",
-    "\n",
-    "    def quieter_action():\n",
-    "        nonlocal volume\n",
-    "        if current_song_path is None:\n",
-    "            return\n",
-    "        volume = max(0.0, volume - 0.1)\n",
-    "        pygame.mixer.music.set_volume(volume)\n",
-    "\n",
-    "    def louder_action():\n",
-    "        nonlocal volume\n",
-    "        if current_song_path is None:\n",
-    "            return\n",
-    "        volume = min(1.0, volume + 0.1)\n",
-    "        pygame.mixer.music.set_volume(volume)\n",
-    "\n",
-    "    def back_action():\n",
-    "        nonlocal song_offset, start_time, total_pause_duration\n",
-    "        if current_song_path is None:\n",
-    "            return\n",
-    "        cur_time = get_current_time()\n",
-    "        new_time = max(0, cur_time - 10)\n",
-    "        change_playback_speed(current_effective_path, current_speed, new_time)\n",
-    "        song_offset = new_time\n",
-    "        start_time = time.time()\n",
-    "        total_pause_duration = 0.0\n",
-    "\n",
-    "    def forward_action():\n",
-    "        nonlocal song_offset, start_time, total_pause_duration\n",
-    "        if current_song_path is None:\n",
-    "            return\n",
-    "        cur_time = get_current_time()\n",
-    "        new_time = cur_time + 10\n",
-    "        change_playback_speed(current_effective_path, current_speed, new_time)\n",
-    "        song_offset = new_time\n",
-    "        start_time = time.time()\n",
-    "        total_pause_duration = 0.0\n",
-    "\n",
-    "    def transpose_up_action():\n",
-    "        nonlocal current_transposition, original_chords, chords, current_song_path, song_offset, start_time, total_pause_duration, current_effective_path\n",
-    "        if current_song_path is None:\n",
-    "            return\n",
-    "        current_pos = get_current_time()\n",
-    "        if pygame.mixer.music.get_busy():\n",
-    "            pygame.mixer.music.stop()\n",
-    "            pygame.mixer.music.unload()\n",
-    "        current_transposition += 1\n",
-    "        temp_file = transpose_audio_file(current_song_path, current_transposition)\n",
-    "        pygame.mixer.music.load(temp_file)\n",
-    "        try:\n",
-    "            pygame.mixer.music.play(loops=0, start=current_pos)\n",
-    "        except TypeError:\n",
-    "            pygame.mixer.music.play()\n",
-    "            pygame.mixer.music.set_pos(current_pos)\n",
-    "        song_offset = current_pos\n",
-    "        start_time = time.time()\n",
-    "        total_pause_duration = 0\n",
-    "        current_effective_path = temp_file\n",
-    "        if original_chords:\n",
-    "            chords[:] = [(t, transpose_chord(ch, current_transposition)) for t, ch in original_chords]\n",
-    "\n",
-    "    def transpose_down_action():\n",
-    "        nonlocal current_transposition, original_chords, chords, current_song_path, song_offset, start_time, total_pause_duration, current_effective_path\n",
-    "        if current_song_path is None:\n",
-    "            return\n",
-    "        current_pos = get_current_time()\n",
-    "        if pygame.mixer.music.get_busy():\n",
-    "            pygame.mixer.music.stop()\n",
-    "            pygame.mixer.music.unload()\n",
-    "        current_transposition -= 1\n",
-    "        temp_file = transpose_audio_file(current_song_path, current_transposition)\n",
-    "        pygame.mixer.music.load(temp_file)\n",
-    "        try:\n",
-    "            pygame.mixer.music.play(loops=0, start=current_pos)\n",
-    "        except TypeError:\n",
-    "            pygame.mixer.music.play()\n",
-    "            pygame.mixer.music.set_pos(current_pos)\n",
-    "        song_offset = current_pos\n",
-    "        start_time = time.time()\n",
-    "        total_pause_duration = 0\n",
-    "        current_effective_path = temp_file\n",
-    "        if original_chords:\n",
-    "            chords[:] = [(t, transpose_chord(ch, current_transposition)) for t, ch in original_chords]\n",
-    "\n",
-    "    scrollbar_dragging = False\n",
-    "    drag_offset = 0\n",
-    "    last_scroll_time = 0\n",
-    "\n",
-    "    running = True\n",
-    "    def exit_action():\n",
-    "        nonlocal running\n",
-    "        running = False\n",
-    "\n",
-    "    def load_song(new_song_path):\n",
-    "        nonlocal current_song_path, song_offset, start_time, total_pause_duration, paused, current_speed, chords, screen, db, current_transposition, original_chords, current_effective_path\n",
-    "        current_song_path = new_song_path\n",
-    "        if current_song_path not in db:\n",
-    "            db[current_song_path] = \"\"\n",
-    "            save_database(db)\n",
-    "        if use_beat_sync:\n",
-    "            chord_filename = os.path.splitext(os.path.abspath(current_song_path))[0] + \"_Chords_BEATSYNC.txt\"\n",
-    "        else:\n",
-    "            chord_filename = os.path.splitext(os.path.abspath(current_song_path))[0] + \"_Chords.txt\"\n",
-    "        print(f\"Loading song: {current_song_path}\")\n",
-    "        sys.stdout.flush()\n",
-    "        if not os.path.exists(chord_filename):\n",
-    "            extraction_screen = pygame.display.set_mode((400, 200))\n",
-    "            pygame.display.set_caption(\"Extracting Chords\")\n",
-    "            extraction_font = pygame.font.Font(None, 36)\n",
-    "            extraction_text = extraction_font.render(\"Extracting Chords\", True, (255, 255, 255))\n",
-    "            extraction_rect = extraction_text.get_rect(center=(200, 100))\n",
-    "            extraction_screen.fill((0, 0, 0))\n",
-    "            extraction_screen.blit(extraction_text, extraction_rect)\n",
-    "            pygame.display.flip()\n",
-    "            extraction_done = threading.Event()\n",
-    "            def extraction_task():\n",
-    "                try:\n",
-    "                    new_chords = extract_chords(current_song_path, beat_sync=use_beat_sync, hop_length=hop_length)\n",
-    "                    if not new_chords:\n",
-    "                        new_chords = [(0.0, \"???\")]\n",
-    "                    chords[:] = new_chords\n",
-    "                    save_chords_to_file(new_chords, chord_filename)\n",
-    "                    print(f\"Extraction finished, saved to {chord_filename}\")\n",
-    "                    db[current_song_path] = chord_filename\n",
-    "                    save_database(db)\n",
-    "                except Exception as e:\n",
-    "                    print(\"Error extracting chords:\", e)\n",
-    "                    chords[:] = []\n",
-    "                extraction_done.set()\n",
-    "            t = threading.Thread(target=extraction_task, daemon=True)\n",
-    "            t.start()\n",
-    "            while not extraction_done.is_set():\n",
-    "                for event in pygame.event.get():\n",
-    "                    if event.type == pygame.QUIT:\n",
-    "                        pygame.quit()\n",
-    "                        return\n",
-    "                extraction_screen.fill((0, 0, 0))\n",
-    "                extraction_screen.blit(extraction_text, extraction_rect)\n",
-    "                pygame.display.flip()\n",
-    "                time.sleep(0.1)\n",
-    "        else:\n",
-    "            try:\n",
-    "                chords[:] = load_chords_from_file(chord_filename)\n",
-    "            except Exception as e:\n",
-    "                print(\"Error loading chords from file:\", e)\n",
-    "                chords[:] = []\n",
-    "        original_chords = chords.copy()\n",
-    "        current_transposition = 0\n",
-    "        current_effective_path = current_song_path\n",
-    "        update_file_manager()\n",
-    "        screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))\n",
-    "        pygame.display.set_caption(\"Player Mode\")\n",
-    "        song_offset = 0.0\n",
-    "        start_time = time.time()\n",
-    "        total_pause_duration = 0.0\n",
-    "        paused = False\n",
-    "        current_speed = 1.0\n",
-    "        pygame.mixer.music.load(current_song_path)\n",
-    "        pygame.mixer.music.play()\n",
-    "\n",
-    "    def delete_file(file):\n",
-    "        nonlocal db\n",
-    "        if file in db:\n",
-    "            del db[file]\n",
-    "            save_database(db)\n",
-    "        update_file_manager()\n",
-    "\n",
-    "    file_widgets = []\n",
-    "    update_file_manager()\n",
-    "\n",
-    "    while running:\n",
-    "        screen.fill((80, 80, 80))\n",
-    "        pygame.draw.rect(screen, (50, 50, 50), (0, 0, FILE_PANEL_WIDTH, WINDOW_HEIGHT))\n",
-    "        pygame.draw.rect(screen, (70, 70, 70), (FILE_PANEL_WIDTH, 0, RIGHT_WIDTH, RIGHT_TOP_HEIGHT))\n",
-    "        pygame.draw.rect(screen, (169, 169, 169), (FILE_PANEL_WIDTH, RIGHT_TOP_HEIGHT, RIGHT_WIDTH, CONTROLS_HEIGHT))\n",
-    "        \n",
-    "        beat_toggle.draw(screen)\n",
-    "        beat_label.draw(screen)\n",
-    "        \n",
-    "        draw_file_manager_border(screen)\n",
-    "        screen.set_clip(file_list_area)\n",
-    "        for main_btn, delete_btn in file_widgets:\n",
-    "            main_btn.draw(screen)\n",
-    "            delete_btn.draw(screen)\n",
-    "        screen.set_clip(None)\n",
-    "        dd_field.draw(screen)\n",
-    "        search_button.draw(screen)\n",
-    "        \n",
-    "        if current_song_path is not None:\n",
-    "            draw_song_title(screen)\n",
-    "        \n",
-    "        # Ermitteln der aktuell gültigen Akkorde (so wie bisher)\n",
-    "        if chords:\n",
-    "            current_time_val = get_current_time()\n",
-    "            current_index = 0\n",
-    "            for i, (t, ch) in enumerate(chords):\n",
-    "                if t > current_time_val:\n",
-    "                    break\n",
-    "                current_index = i\n",
-    "            chord_prev2 = chords[current_index-2][1] if current_index-2 >= 0 else \"?\"\n",
-    "            chord_prev1 = chords[current_index-1][1] if current_index-1 >= 0 else \"?\"\n",
-    "            chord_current = chords[current_index][1] if current_index < len(chords) else \"?\"\n",
-    "            chord_next1 = chords[current_index+1][1] if current_index+1 < len(chords) else \"?\"\n",
-    "            chord_next2 = chords[current_index+2][1] if current_index+2 < len(chords) else \"?\"\n",
-    "        else:\n",
-    "            chord_prev2 = chord_prev1 = chord_current = chord_next1 = chord_next2 = \"?\"\n",
-    "        \n",
-    "        # Berechnung der Positionen in der Anzeige:\n",
-    "        \n",
-    "        r_x = FILE_PANEL_WIDTH  # Startpunkt der rechten Seite\n",
-    "        r_width = RIGHT_WIDTH   # Verfügbare Breite für die Chords-Anzeige\n",
-    "        \n",
-    "        # Vertikale Aufteilung der Chords-Anzeige (bezogen auf CHORDS_HEIGHT und SONG_TITLE_HEIGHT):\n",
-    "        top_segment_center    = SONG_TITLE_HEIGHT + int(0.275 * CHORDS_HEIGHT)   # Oberster Bereich: aktueller Akkord\n",
-    "        middle_segment_center = SONG_TITLE_HEIGHT + int(0.675 * CHORDS_HEIGHT)   # Mittlerer Bereich: Akkord 2 und 4\n",
-    "        bottom_segment_center = SONG_TITLE_HEIGHT + int(0.9 * CHORDS_HEIGHT)     # Unterer Bereich: Akkord 1 und 5\n",
-    "        \n",
-    "        # Horizontale Positionierung:\n",
-    "        # 1. Akkord (links) bei 10% der Breite, 2. bei 32,5%, 3. in der Mitte, 4. bei 70% und 5. bei 90%\n",
-    "        pos_prev2 = (r_x + int(r_width * 0.1), bottom_segment_center)      # 1. Akkord (links)\n",
-    "        pos_prev1 = (r_x + int(r_width * 0.325), middle_segment_center)      # 2. Akkord\n",
-    "        pos_current = (r_x + int(r_width * 0.5), top_segment_center)         # Aktueller Akkord (Mitte)\n",
-    "        pos_next1 = (r_x + int(r_width * 0.7), middle_segment_center)        # 4. Akkord\n",
-    "        pos_next2 = (r_x + int(r_width * 0.9), bottom_segment_center)        # 5. Akkord (rechts)\n",
-    "        \n",
-    "        # Zeichnen der Akkorde:\n",
-    "\n",
-    "        FontScaller = 1.8\n",
-    "        surf_prev2 = pygame.font.Font(None, int(36 * FontScaller)).render(chord_prev2, True, (255, 255, 255))\n",
-    "        surf_prev1 = pygame.font.Font(None, int(48 * FontScaller)).render(chord_prev1, True, (255, 255, 255))\n",
-    "        surf_current = pygame.font.Font(None, int(72 * FontScaller)).render(chord_current, True, (255, 255, 0))\n",
-    "        surf_next1 = pygame.font.Font(None, int(48 * FontScaller)).render(chord_next1, True, (255, 255, 255))\n",
-    "        surf_next2 = pygame.font.Font(None, int(36 * FontScaller)).render(chord_next2, True, (255, 255, 255))\n",
-    "        \n",
-    "        screen.blit(surf_prev2, surf_prev2.get_rect(center=pos_prev2))\n",
-    "        screen.blit(surf_prev1, surf_prev1.get_rect(center=pos_prev1))\n",
-    "        screen.blit(surf_current, surf_current.get_rect(center=pos_current))\n",
-    "        screen.blit(surf_next1, surf_next1.get_rect(center=pos_next1))\n",
-    "        screen.blit(surf_next2, surf_next2.get_rect(center=pos_next2))\n",
-    "\n",
-    "        \n",
-    "        time_area_rect = pygame.Rect(FILE_PANEL_WIDTH, SONG_TITLE_HEIGHT + CHORDS_HEIGHT, RIGHT_WIDTH, TIME_HEIGHT)\n",
-    "        pygame.draw.rect(screen, (30, 30, 30), time_area_rect)\n",
-    "        time_text = f\"Time: {get_current_time():.2f}s   Speed: {current_speed:.1f}   Volume: {volume:.1f}   Transpose: {current_transposition}\"\n",
-    "        time_surf = pygame.font.Font(None, 28).render(time_text, True, (255, 255, 255))\n",
-    "        screen.blit(time_surf, time_surf.get_rect(center=time_area_rect.center))\n",
-    "        \n",
-    "        for btn in row1_buttons:\n",
-    "            btn.draw(screen)\n",
-    "        for btn in row2_buttons:\n",
-    "            btn.draw(screen)\n",
-    "        \n",
-    "        for event in pygame.event.get():\n",
-    "            if event.type == pygame.QUIT:\n",
-    "                running = False\n",
-    "            elif event.type == pygame.DROPFILE:\n",
-    "                load_song(event.file)\n",
-    "            elif event.type == pygame.MOUSEWHEEL:\n",
-    "                scroll_offset += event.y * 20\n",
-    "                scroll_offset = min(0, scroll_offset)\n",
-    "                max_scroll = -max(0, (len(file_widgets) * 40) - file_list_area.height)\n",
-    "                scroll_offset = max(max_scroll, scroll_offset)\n",
-    "                last_scroll_time = pygame.time.get_ticks()\n",
-    "                update_file_manager()\n",
-    "            elif event.type == pygame.MOUSEBUTTONDOWN:\n",
-    "                if event.button != 1:\n",
-    "                    continue\n",
-    "                if pygame.time.get_ticks() - last_scroll_time < 300:\n",
-    "                    continue\n",
-    "                pos = pygame.mouse.get_pos()\n",
-    "                scrollbar_rect = pygame.Rect(FILE_PANEL_WIDTH - 10, file_list_area.top, 10, file_list_area.height)\n",
-    "                if scrollbar_rect.collidepoint(pos):\n",
-    "                    scrollbar_dragging = True\n",
-    "                    drag_offset = pos[1] - scrollbar_rect.y\n",
-    "                elif pos[0] < FILE_PANEL_WIDTH:\n",
-    "                    for main_btn, del_btn in file_widgets:\n",
-    "                        if main_btn.is_clicked(pos):\n",
-    "                            main_btn.action()\n",
-    "                        elif del_btn.is_clicked(pos):\n",
-    "                            del_btn.action()\n",
-    "                    if beat_toggle.is_clicked(pos):\n",
-    "                        beat_toggle.action()\n",
-    "                    if search_button.is_clicked(pos):\n",
-    "                        search_button.action()\n",
-    "                else:\n",
-    "                    for btn in row1_buttons:\n",
-    "                        if btn.is_clicked(pos):\n",
-    "                            btn.action()\n",
-    "                    for btn in row2_buttons:\n",
-    "                        if btn.is_clicked(pos):\n",
-    "                            btn.action()\n",
-    "            elif event.type == pygame.MOUSEBUTTONUP:\n",
-    "                scrollbar_dragging = False\n",
-    "            elif event.type == pygame.MOUSEMOTION:\n",
-    "                if 'scrollbar_dragging' in locals() and scrollbar_dragging:\n",
-    "                    mouse_y = event.pos[1]\n",
-    "                    new_thumb_y = mouse_y - drag_offset - file_list_area.top\n",
-    "                    total_content_height = len(file_widgets) * 40\n",
-    "                    if total_content_height > file_list_area.height:\n",
-    "                        max_scroll = total_content_height - file_list_area.height\n",
-    "                        new_scroll = - (new_thumb_y / (file_list_area.height - (file_list_area.height * file_list_area.height / total_content_height))) * max_scroll\n",
-    "                        scroll_offset = int(new_scroll)\n",
-    "                        scroll_offset = min(0, scroll_offset)\n",
-    "                        scroll_offset = max(-max_scroll, scroll_offset)\n",
-    "                        update_file_manager()\n",
-    "        pygame.display.flip()\n",
-    "        clock.tick(30)\n",
-    "    \n",
-    "    pygame.mixer.music.stop()\n",
-    "    pygame.quit()\n",
-    "\n",
-    "def cleanup_temp_files():\n",
-    "    for file in temp_speed_files:\n",
-    "        if os.path.exists(file):\n",
-    "            try:\n",
-    "                os.remove(file)\n",
-    "            except Exception as e:\n",
-    "                print(f\"Error cleaning {file}: {e}\")\n",
-    "    temp_transposed = os.path.join(tempfile.gettempdir(), \"temp_transposed.wav\")\n",
-    "    if os.path.exists(temp_transposed):\n",
-    "        try:\n",
-    "            os.remove(temp_transposed)\n",
-    "        except Exception as e:\n",
-    "            print(f\"Error cleaning temp_transposed.wav: {e}\")\n",
-    "\n",
-    "if __name__ == \"__main__\":\n",
-    "    try:\n",
-    "        initial_file = None\n",
-    "        chords = []\n",
-    "        last_scroll_time = 0\n",
-    "        player_mode_gui(chords, initial_file)\n",
-    "    finally:\n",
-    "        cleanup_temp_files()\n"
-   ]
-  },
-  {
-   "cell_type": "code",
-   "execution_count": null,
-   "id": "399f7d4c-8150-47a4-bb4f-f2ccf742a367",
-   "metadata": {},
-   "outputs": [],
-   "source": []
-  }
- ],
- "metadata": {
-  "kernelspec": {
-   "display_name": "Python [conda env:base] *",
-   "language": "python",
-   "name": "conda-base-py"
-  },
-  "language_info": {
-   "codemirror_mode": {
-    "name": "ipython",
-    "version": 3
-   },
-   "file_extension": ".py",
-   "mimetype": "text/x-python",
-   "name": "python",
-   "nbconvert_exporter": "python",
-   "pygments_lexer": "ipython3",
-   "version": "3.12.3"
-  }
- },
- "nbformat": 4,
- "nbformat_minor": 5
-}
+    chord_labels = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+    best_score = -np.inf
+    best_chord = "N.C."
+    norm = np.linalg.norm(chroma_column)
+    chroma_norm = chroma_column / norm if norm > 0 else chroma_column
+    for i in range(12):
+        for quality, template in chord_templates.items():
+            template_rotated = np.roll(template, i)
+            t_norm = np.linalg.norm(template_rotated)
+            template_norm = template_rotated / t_norm if t_norm > 0 else template_rotated
+            score = np.dot(chroma_norm, template_norm)
+            if score > best_score:
+                best_score = score
+                best_chord = chord_labels[i] + quality
+    return best_chord
+
+def extract_chords(file_path, beat_sync=False, hop_length=512):
+    file_path = clean_path(file_path)
+    file_path = convert_mp3_to_wav(file_path)
+    abs_file_path = os.path.abspath(file_path)
+    if not os.path.exists(abs_file_path):
+        raise FileNotFoundError(f"File {abs_file_path} not found.")
+    y, sr = sf.read(abs_file_path)
+    y = y[:, 0] if y.ndim > 1 else y
+    y_harmonic, y_percussive = librosa.effects.hpss(y)
+    chromagram = librosa.feature.chroma_cqt(y=y_harmonic, sr=sr, hop_length=hop_length, n_chroma=12)
+    if beat_sync:
+        tempo, beats = librosa.beat.beat_track(y=y_percussive, sr=sr, hop_length=hop_length)
+        chroma_sync = librosa.util.sync(chromagram, beats, aggregate=np.mean)
+        print("Chroma_sync shape before check:", chroma_sync.shape)
+        sys.stdout.flush()
+        if chroma_sync.shape[0] > 12:
+            chroma_sync = chroma_sync[:12, :]
+        elif chroma_sync.shape[0] < 12:
+            pad_width = 12 - chroma_sync.shape[0]
+            chroma_sync = np.pad(chroma_sync, ((0, pad_width), (0, 0)), mode='constant')
+        print("Chroma_sync shape after check:", chroma_sync.shape)
+        sys.stdout.flush()
+        times = librosa.frames_to_time(beats[:-1], sr=sr, hop_length=hop_length)
+    else:
+        chroma_sync = chromagram
+        times = librosa.frames_to_time(np.arange(chromagram.shape[1]), sr=sr, hop_length=hop_length)
+    chord_sequence = [detect_chord(np.resize(chroma_sync[:, i], (12,))) for i in range(chroma_sync.shape[1])]
+    simplified_chords = []
+    timestamps = []
+    prev_chord = None
+    for i, chord in enumerate(chord_sequence):
+        if chord != prev_chord:
+            simplified_chords.append(chord)
+            if i < len(times):
+                timestamps.append(times[i])
+            prev_chord = chord
+    print("Extraction finished. Number of chords found:", len(simplified_chords))
+    sys.stdout.flush()
+    return list(zip(timestamps, simplified_chords))
+
+def get_song_duration(audio_file):
+    import librosa
+    y, sr = librosa.load(audio_file, sr=None)
+    return len(y) / sr
+
+def change_playback_speed(audio_file, speed, start_offset):
+    # Songdauer ermitteln
+    duration = get_song_duration(audio_file)
+    if start_offset >= duration:
+        # Setze den Offset auf 0.1 Sekunden vor dem Ende
+        start_offset = max(0, duration - 0.1)
+    
+    temp_file = 'temp_speed_changed.wav'
+    if pygame.mixer.music.get_busy():
+        pygame.mixer.music.stop()
+        pygame.mixer.music.unload()
+    if os.path.exists(temp_file):
+        try:
+            os.remove(temp_file)
+        except PermissionError:
+            pass
+    try:
+        subprocess.run([
+            FFMPEG_PATH, '-y', '-ss', str(start_offset), '-i', audio_file,
+            '-filter:a', f'atempo={speed}', '-vn', temp_file
+        ], check=True)
+    except subprocess.CalledProcessError as e:
+        print("Fehler beim Aufruf von ffmpeg:", e)
+        # Hier könnten Sie beispielsweise die Wiedergabe beenden oder einen alternativen Offset setzen
+        return
+    try:
+        pygame.mixer.music.load(temp_file)
+        pygame.mixer.music.play()
+        temp_speed_files.append(temp_file)
+    except Exception as e:
+        print("Fehler beim Laden oder Abspielen der Datei:", e)
+
+    
+# ---------------------------
+# Angepasste Transpositionsfunktionen
+# ---------------------------
+def transpose_audio_file(song_path, n_steps):
+    # Speichere das transponierte Audio im Systemtemp-Verzeichnis
+    temp_file = os.path.join(tempfile.gettempdir(), "temp_transposed.wav")
+    if os.path.exists(temp_file):
+        try:
+            os.remove(temp_file)
+        except PermissionError:
+            pass
+    y, sr = librosa.load(song_path, sr=None)
+    y_transposed = librosa.effects.pitch_shift(y, sr=sr, n_steps=n_steps)
+    sf.write(temp_file, y_transposed, sr)
+    return temp_file
+
+def transpose_chord(chord, n_steps):
+    chord_labels = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+    if chord not in chord_labels:
+        return chord
+    idx = chord_labels.index(chord)
+    new_idx = (idx + n_steps) % 12
+    return chord_labels[new_idx]
+
+# ---------------------------
+# Erweiterte Button-Klasse mit Bildunterstützung
+# ---------------------------
+class Button:
+    def __init__(self, rect, color, text, text_color, action, image_path=None, max_width=None, initial_font_size=36):
+        self.rect = pygame.Rect(rect)
+        self.color = color
+        self.text = text
+        self.text_color = text_color
+        self.action = action
+        self.image = None
+        if image_path is not None:
+            # Verwenden Sie den relativen Pfad. Unter Windows empfiehlt sich ein Rohstring oder doppelte Backslashes.
+            self.image = pygame.image.load(image_path).convert_alpha()
+            self.image = pygame.transform.scale(self.image, (self.rect.width, self.rect.height))
+        if max_width is not None:
+            size = initial_font_size
+            self.font = pygame.font.Font(None, size)
+            while self.font.size(text)[0] > max_width and size > 10:
+                size -= 1
+                self.font = pygame.font.Font(None, size)
+        else:
+            self.font = pygame.font.Font(None, initial_font_size)
+    def draw(self, surface):
+        pygame.draw.rect(surface, self.color, self.rect)
+        pygame.draw.rect(surface, (0,0,0), self.rect, 1)
+        if self.image is not None:
+            surface.blit(self.image, self.rect)
+        else:
+            txt_surf = self.font.render(self.text, True, self.text_color)
+            txt_rect = txt_surf.get_rect(center=self.rect.center)
+            surface.blit(txt_surf, txt_rect)
+    def is_clicked(self, pos):
+        return self.rect.collidepoint(pos)
+
+# ---------------------------
+# Datei-Auswahldialog (Tkinter)
+# ---------------------------
+def search_file():
+    root = tk.Tk()
+    root.withdraw()
+    filename = askopenfilename(title="Select a file", filetypes=[("Audio Files", "*.mp3 *.wav")])
+    root.destroy()
+    return filename
+
+# ---------------------------
+# Haupt-GUI
+# ---------------------------
+def player_mode_gui(chords, initial_song_path=None):
+    pygame.init()
+    pygame.event.set_allowed([pygame.QUIT, pygame.MOUSEBUTTONDOWN, pygame.DROPFILE,
+                              pygame.MOUSEWHEEL, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION])
+    WINDOW_WIDTH, WINDOW_HEIGHT = 1000, 600
+    screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+    pygame.display.set_caption("Player Mode")
+    clock = pygame.time.Clock()
+
+    db = load_database()
+
+    SONG_TITLE_HEIGHT = 40
+    RIGHT_TOP_HEIGHT = 400
+    CHORDS_HEIGHT = int(RIGHT_TOP_HEIGHT * 0.75) - SONG_TITLE_HEIGHT
+    TIME_HEIGHT = RIGHT_TOP_HEIGHT - (CHORDS_HEIGHT + SONG_TITLE_HEIGHT)
+    CONTROLS_HEIGHT = WINDOW_HEIGHT - RIGHT_TOP_HEIGHT
+
+    FILE_PANEL_WIDTH = 250
+    RIGHT_WIDTH = WINDOW_WIDTH - FILE_PANEL_WIDTH
+
+    current_speed = 1.0
+    song_offset = 0.0
+    start_time = 0.0
+    total_pause_duration = 0.0
+    paused = False
+    volume = 0.5
+    hop_length = 512
+
+    # Variable für den aktuell abgespielten (effektiven) Audiopfad
+    current_effective_path = initial_song_path
+
+    # Transpositionsvariablen
+    current_transposition = 0
+    original_chords = []
+
+    pygame.mixer.init()
+    pygame.mixer.music.set_volume(volume)
+    current_song_path = initial_song_path
+
+    use_beat_sync = True
+
+    scroll_offset = 5
+    margin_top = 0
+    margin_bottom = 30
+    file_list_area = pygame.Rect(0, 50 + margin_top, FILE_PANEL_WIDTH, WINDOW_HEIGHT - 50 - 80 - margin_bottom)
+
+    # File Manager: BeatSync-Buttons
+    beat_toggle_rect = (10, 10, 30, 30)
+    def toggle_beat_sync():
+        nonlocal use_beat_sync, beat_toggle
+        use_beat_sync = not use_beat_sync
+        beat_toggle.text = "X" if use_beat_sync else ""
+    beat_toggle = Button(beat_toggle_rect, (128, 128, 128), "X", (0, 0, 0), toggle_beat_sync)
+    beat_label = Button((50, 10, 100, 30), (80, 80, 80), "BeatSync", (255, 255, 255), lambda: None)
+
+    file_widgets = []
+    def update_file_manager():
+        nonlocal file_widgets, db, scroll_offset
+        folder_files = [os.path.join(os.getcwd(), f) for f in os.listdir('.') if f.lower().endswith(('.mp3','.wav'))]
+        db_files = list(db.keys())
+        all_files = list(set(folder_files + db_files))
+        all_files.sort()
+        file_widgets.clear()
+        for idx, file in enumerate(all_files):
+            main_rect = (10, file_list_area.top + idx * 40 + scroll_offset, FILE_PANEL_WIDTH - 20 - 25, 30)
+            delete_rect = (10 + (FILE_PANEL_WIDTH - 20 - 25), file_list_area.top + idx * 40 + scroll_offset, 25, 30)
+            main_btn = Button(main_rect, (211, 211, 211), os.path.basename(file), (0, 0, 0),
+                              lambda f=file: load_song(f),
+                              max_width=FILE_PANEL_WIDTH - 20 - 25, initial_font_size=36)
+            delete_btn = Button(delete_rect, (150, 0, 0), "X", (255, 255, 255),
+                                lambda f=file: delete_file(f),
+                                max_width=25, initial_font_size=24)
+            file_widgets.append((main_btn, delete_btn))
+    update_file_manager()
+
+    search_button_rect = (10, WINDOW_HEIGHT - 40, FILE_PANEL_WIDTH - 20, 30)
+    search_button = Button(search_button_rect, (180, 211, 211), "Search File", (0, 0, 0),
+                           lambda: load_song(search_file()),
+                           max_width=FILE_PANEL_WIDTH - 20, initial_font_size=36)
+    dd_field_rect = (10, WINDOW_HEIGHT - 100, FILE_PANEL_WIDTH -20 , 50)
+    dd_field = Button(dd_field_rect, (100, 180, 180), "Drag & Drop File", (50, 50, 50),
+                      lambda: None, max_width=FILE_PANEL_WIDTH - 20, initial_font_size=24)
+
+    def draw_file_manager_border(surface):
+        pygame.draw.rect(surface, (0, 0, 0), file_list_area, 2)
+
+    def draw_song_title(surface):
+        if current_song_path is not None:
+            song_name = os.path.basename(current_song_path)
+            title_text = "Song: " + song_name
+            title_font = pygame.font.Font(None, 36)
+            title_surf = title_font.render(title_text, True, (200, 255, 255))
+            title_rect = title_surf.get_rect(midleft=(FILE_PANEL_WIDTH + 10, SONG_TITLE_HEIGHT // 2))
+            surface.blit(title_surf, title_rect)
+
+    # ---------------------------
+    # Definition der Steuerelement-Buttons mit Icons
+    # ---------------------------
+    # --- Neuer Steuerbereich in 2 Ebenen ---
+
+    # Festlegung der Button-Größen und -Abstände
+    BUTTON_WIDTH = 80
+    BUTTON_HEIGHT = 80
+    # Berechnen Sie den horizontalen Abstand: Es gibt 5 Buttons und 6 Zwischenräume
+    gap = (RIGHT_WIDTH - 5 * BUTTON_WIDTH) // 6
+    
+    # Bestimmen Sie die Y-Positionen für die zwei Ebenen
+    row1_y = RIGHT_TOP_HEIGHT + gap/5         # obere Zeile
+    row2_y = RIGHT_TOP_HEIGHT + BUTTON_HEIGHT + 2 * gap/5  # untere Zeile
+    
+    # Bestimmen Sie den Startpunkt (X) für beide Zeilen
+    row_start_x = FILE_PANEL_WIDTH + gap
+    
+    # Obere Zeile (Row 1)
+    row1_buttons = [
+        Button(
+            (row_start_x + 0 * (BUTTON_WIDTH + gap), row1_y, BUTTON_WIDTH, BUTTON_HEIGHT),
+            (255, 255, 255), "",
+            (0, 0, 0), lambda: louder_action(),
+            image_path=r"resources\Louder.png"
+        ),
+
+        Button(
+            (row_start_x + 1 * (BUTTON_WIDTH + gap), row1_y, BUTTON_WIDTH, BUTTON_HEIGHT),
+            (255, 255, 255), "",
+            (0, 0, 0), lambda: back_action(),
+            image_path=r"resources\Backward.jpg"
+        ),
+
+        
+        Button(
+            (row_start_x + 2 * (BUTTON_WIDTH + gap), row1_y, BUTTON_WIDTH, BUTTON_HEIGHT),
+            (0, 150, 0), "",
+            (0, 0, 0), lambda: toggle_pause(),
+            image_path=r"resources\PlayPause.png"
+        ),
+        
+     
+        Button(
+            (row_start_x + 3 * (BUTTON_WIDTH + gap), row1_y, BUTTON_WIDTH, BUTTON_HEIGHT),
+            (255, 255, 255), "",
+            (0, 0, 0), lambda: forward_action(),
+            image_path=r"resources\Forward.png"
+        ),
+        Button(
+            (row_start_x + 4 * (BUTTON_WIDTH + gap), row1_y, BUTTON_WIDTH, BUTTON_HEIGHT),
+            (255, 255, 255), "",
+            (255, 255, 255), lambda: transpose_up_action(),
+            image_path=r"resources\TransposeUp.jpg"
+        )
+    ]
+    
+    # Untere Zeile (Row 2)
+    row2_buttons = [
+        Button(
+            (row_start_x + 0 * (BUTTON_WIDTH + gap), row2_y, BUTTON_WIDTH, BUTTON_HEIGHT),
+            (255, 255, 255), "",
+            (200, 200, 200), lambda: quieter_action(),
+            image_path=r"resources\Quieter.png"
+        ),         
+
+        Button(
+            (row_start_x + 1 * (BUTTON_WIDTH + gap), row2_y, BUTTON_WIDTH, BUTTON_HEIGHT),
+            (255, 255, 255), "",
+            (200, 200, 200), lambda: slower_action(),
+            image_path=r"resources\slow.png"
+        ),
+
+        Button(
+            (row_start_x + 2 * (BUTTON_WIDTH + gap), row2_y, BUTTON_WIDTH, BUTTON_HEIGHT),
+            (255, 0, 0), "",
+            (255, 255, 255), lambda: repeat_song(),
+            image_path=r"resources\Repeat.png"
+        ),
+
+
+        Button(
+            (row_start_x + 3 * (BUTTON_WIDTH + gap), row2_y, BUTTON_WIDTH, BUTTON_HEIGHT),
+            (255, 255, 255), "",
+            (0, 0, 0), lambda: faster_action(),
+            image_path=r"resources\fast.png"
+        ),
+        
+        Button(
+            (row_start_x + 4 * (BUTTON_WIDTH + gap), row2_y, BUTTON_WIDTH, BUTTON_HEIGHT),
+            (255, 255, 255), "",
+            (255, 255, 255), lambda: transpose_down_action(),
+            image_path=r"resources\TransposeDown.jpg"
+        )
+    ]
+
+    
+    # ---------------------------
+    # Zeitanzeige (Time/Speed/Volume/Transpose)
+    # ---------------------------
+    def get_current_time():
+        if current_song_path is None:
+            return 0.0
+        if paused:
+            return (pause_start_time - start_time - total_pause_duration) * current_speed + song_offset
+        else:
+            return (time.time() - start_time - total_pause_duration) * current_speed + song_offset
+    pause_start_time = 0.0
+
+    # ---------------------------
+    # Wiedergabesteuerung-Funktionen
+    # ---------------------------
+    def toggle_pause():
+        nonlocal paused, total_pause_duration, start_time, pause_start_time
+        if current_song_path is None:
+            return
+        if paused:
+            pygame.mixer.music.unpause()
+            paused = False
+            total_pause_duration += time.time() - pause_start_time
+        else:
+            pygame.mixer.music.pause()
+            paused = True
+            pause_start_time = time.time()
+
+    def repeat_song():
+        nonlocal song_offset, start_time, total_pause_duration, current_effective_path
+        if current_song_path is None:
+            return
+        song_offset = 0.0
+        start_time = time.time()
+        total_pause_duration = 0.0
+        pygame.mixer.music.stop()
+        pygame.mixer.music.load(current_effective_path)
+        pygame.mixer.music.play()
+
+    def slower_action():
+        nonlocal current_speed, song_offset, start_time, total_pause_duration
+        if current_song_path is None:
+            return
+        cur_time = get_current_time()
+        current_speed = max(0.5, current_speed - 0.1)
+        change_playback_speed(current_effective_path, current_speed, cur_time)
+        song_offset = cur_time
+        start_time = time.time()
+        total_pause_duration = 0.0
+
+    def faster_action():
+        nonlocal current_speed, song_offset, start_time, total_pause_duration
+        if current_song_path is None:
+            return
+        cur_time = get_current_time()
+        current_speed = min(2.0, current_speed + 0.1)
+        change_playback_speed(current_effective_path, current_speed, cur_time)
+        song_offset = cur_time
+        start_time = time.time()
+        total_pause_duration = 1.0
+
+    def quieter_action():
+        nonlocal volume
+        if current_song_path is None:
+            return
+        volume = max(0.0, volume - 0.1)
+        pygame.mixer.music.set_volume(volume)
+
+    def louder_action():
+        nonlocal volume
+        if current_song_path is None:
+            return
+        volume = min(1.0, volume + 0.1)
+        pygame.mixer.music.set_volume(volume)
+
+    def back_action():
+        nonlocal song_offset, start_time, total_pause_duration
+        if current_song_path is None:
+            return
+        cur_time = get_current_time()
+        new_time = max(0, cur_time - 10)
+        change_playback_speed(current_effective_path, current_speed, new_time)
+        song_offset = new_time
+        start_time = time.time()
+        total_pause_duration = 0.0
+
+    def forward_action():
+        nonlocal song_offset, start_time, total_pause_duration
+        if current_song_path is None:
+            return
+        cur_time = get_current_time()
+        new_time = cur_time + 10
+        change_playback_speed(current_effective_path, current_speed, new_time)
+        song_offset = new_time
+        start_time = time.time()
+        total_pause_duration = 0.0
+
+    def transpose_up_action():
+        nonlocal current_transposition, original_chords, chords, current_song_path, song_offset, start_time, total_pause_duration, current_effective_path
+        if current_song_path is None:
+            return
+        current_pos = get_current_time()
+        if pygame.mixer.music.get_busy():
+            pygame.mixer.music.stop()
+            pygame.mixer.music.unload()
+        current_transposition += 1
+        temp_file = transpose_audio_file(current_song_path, current_transposition)
+        pygame.mixer.music.load(temp_file)
+        try:
+            pygame.mixer.music.play(loops=0, start=current_pos)
+        except TypeError:
+            pygame.mixer.music.play()
+            pygame.mixer.music.set_pos(current_pos)
+        song_offset = current_pos
+        start_time = time.time()
+        total_pause_duration = 0
+        current_effective_path = temp_file
+        if original_chords:
+            chords[:] = [(t, transpose_chord(ch, current_transposition)) for t, ch in original_chords]
+
+    def transpose_down_action():
+        nonlocal current_transposition, original_chords, chords, current_song_path, song_offset, start_time, total_pause_duration, current_effective_path
+        if current_song_path is None:
+            return
+        current_pos = get_current_time()
+        if pygame.mixer.music.get_busy():
+            pygame.mixer.music.stop()
+            pygame.mixer.music.unload()
+        current_transposition -= 1
+        temp_file = transpose_audio_file(current_song_path, current_transposition)
+        pygame.mixer.music.load(temp_file)
+        try:
+            pygame.mixer.music.play(loops=0, start=current_pos)
+        except TypeError:
+            pygame.mixer.music.play()
+            pygame.mixer.music.set_pos(current_pos)
+        song_offset = current_pos
+        start_time = time.time()
+        total_pause_duration = 0
+        current_effective_path = temp_file
+        if original_chords:
+            chords[:] = [(t, transpose_chord(ch, current_transposition)) for t, ch in original_chords]
+
+    scrollbar_dragging = False
+    drag_offset = 0
+    last_scroll_time = 0
+
+    running = True
+    def exit_action():
+        nonlocal running
+        running = False
+
+    def load_song(new_song_path):
+        nonlocal current_song_path, song_offset, start_time, total_pause_duration, paused, current_speed, chords, screen, db, current_transposition, original_chords, current_effective_path
+        current_song_path = new_song_path
+        if current_song_path not in db:
+            db[current_song_path] = ""
+            save_database(db)
+        if use_beat_sync:
+            chord_filename = os.path.splitext(os.path.abspath(current_song_path))[0] + "_Chords_BEATSYNC.txt"
+        else:
+            chord_filename = os.path.splitext(os.path.abspath(current_song_path))[0] + "_Chords.txt"
+        print(f"Loading song: {current_song_path}")
+        sys.stdout.flush()
+        if not os.path.exists(chord_filename):
+            extraction_screen = pygame.display.set_mode((400, 200))
+            pygame.display.set_caption("Extracting Chords")
+            extraction_font = pygame.font.Font(None, 36)
+            extraction_text = extraction_font.render("Extracting Chords", True, (255, 255, 255))
+            extraction_rect = extraction_text.get_rect(center=(200, 100))
+            extraction_screen.fill((0, 0, 0))
+            extraction_screen.blit(extraction_text, extraction_rect)
+            pygame.display.flip()
+            extraction_done = threading.Event()
+            def extraction_task():
+                try:
+                    new_chords = extract_chords(current_song_path, beat_sync=use_beat_sync, hop_length=hop_length)
+                    if not new_chords:
+                        new_chords = [(0.0, "???")]
+                    chords[:] = new_chords
+                    save_chords_to_file(new_chords, chord_filename)
+                    print(f"Extraction finished, saved to {chord_filename}")
+                    db[current_song_path] = chord_filename
+                    save_database(db)
+                except Exception as e:
+                    print("Error extracting chords:", e)
+                    chords[:] = []
+                extraction_done.set()
+            t = threading.Thread(target=extraction_task, daemon=True)
+            t.start()
+            while not extraction_done.is_set():
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        pygame.quit()
+                        return
+                extraction_screen.fill((0, 0, 0))
+                extraction_screen.blit(extraction_text, extraction_rect)
+                pygame.display.flip()
+                time.sleep(0.1)
+        else:
+            try:
+                chords[:] = load_chords_from_file(chord_filename)
+            except Exception as e:
+                print("Error loading chords from file:", e)
+                chords[:] = []
+        original_chords = chords.copy()
+        current_transposition = 0
+        current_effective_path = current_song_path
+        update_file_manager()
+        screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+        pygame.display.set_caption("Player Mode")
+        song_offset = 0.0
+        start_time = time.time()
+        total_pause_duration = 0.0
+        paused = False
+        current_speed = 1.0
+        pygame.mixer.music.load(current_song_path)
+        pygame.mixer.music.play()
+
+    def delete_file(file):
+        nonlocal db
+        if file in db:
+            del db[file]
+            save_database(db)
+        update_file_manager()
+
+    file_widgets = []
+    update_file_manager()
+
+    while running:
+        screen.fill((80, 80, 80))
+        pygame.draw.rect(screen, (50, 50, 50), (0, 0, FILE_PANEL_WIDTH, WINDOW_HEIGHT))
+        pygame.draw.rect(screen, (70, 70, 70), (FILE_PANEL_WIDTH, 0, RIGHT_WIDTH, RIGHT_TOP_HEIGHT))
+        pygame.draw.rect(screen, (169, 169, 169), (FILE_PANEL_WIDTH, RIGHT_TOP_HEIGHT, RIGHT_WIDTH, CONTROLS_HEIGHT))
+        
+        beat_toggle.draw(screen)
+        beat_label.draw(screen)
+        
+        draw_file_manager_border(screen)
+        screen.set_clip(file_list_area)
+        for main_btn, delete_btn in file_widgets:
+            main_btn.draw(screen)
+            delete_btn.draw(screen)
+        screen.set_clip(None)
+        dd_field.draw(screen)
+        search_button.draw(screen)
+        
+        if current_song_path is not None:
+            draw_song_title(screen)
+        
+        # Ermitteln der aktuell gültigen Akkorde (so wie bisher)
+        if chords:
+            current_time_val = get_current_time()
+            current_index = 0
+            for i, (t, ch) in enumerate(chords):
+                if t > current_time_val:
+                    break
+                current_index = i
+            chord_prev2 = chords[current_index-2][1] if current_index-2 >= 0 else "?"
+            chord_prev1 = chords[current_index-1][1] if current_index-1 >= 0 else "?"
+            chord_current = chords[current_index][1] if current_index < len(chords) else "?"
+            chord_next1 = chords[current_index+1][1] if current_index+1 < len(chords) else "?"
+            chord_next2 = chords[current_index+2][1] if current_index+2 < len(chords) else "?"
+        else:
+            chord_prev2 = chord_prev1 = chord_current = chord_next1 = chord_next2 = "?"
+        
+        # Berechnung der Positionen in der Anzeige:
+        
+        r_x = FILE_PANEL_WIDTH  # Startpunkt der rechten Seite
+        r_width = RIGHT_WIDTH   # Verfügbare Breite für die Chords-Anzeige
+        
+        # Vertikale Aufteilung der Chords-Anzeige (bezogen auf CHORDS_HEIGHT und SONG_TITLE_HEIGHT):
+        top_segment_center    = SONG_TITLE_HEIGHT + int(0.275 * CHORDS_HEIGHT)   # Oberster Bereich: aktueller Akkord
+        middle_segment_center = SONG_TITLE_HEIGHT + int(0.675 * CHORDS_HEIGHT)   # Mittlerer Bereich: Akkord 2 und 4
+        bottom_segment_center = SONG_TITLE_HEIGHT + int(0.9 * CHORDS_HEIGHT)     # Unterer Bereich: Akkord 1 und 5
+        
+        # Horizontale Positionierung:
+        # 1. Akkord (links) bei 10% der Breite, 2. bei 32,5%, 3. in der Mitte, 4. bei 70% und 5. bei 90%
+        pos_prev2 = (r_x + int(r_width * 0.1), bottom_segment_center)      # 1. Akkord (links)
+        pos_prev1 = (r_x + int(r_width * 0.325), middle_segment_center)      # 2. Akkord
+        pos_current = (r_x + int(r_width * 0.5), top_segment_center)         # Aktueller Akkord (Mitte)
+        pos_next1 = (r_x + int(r_width * 0.7), middle_segment_center)        # 4. Akkord
+        pos_next2 = (r_x + int(r_width * 0.9), bottom_segment_center)        # 5. Akkord (rechts)
+        
+        # Zeichnen der Akkorde:
+
+        FontScaller = 1.8
+        surf_prev2 = pygame.font.Font(None, int(36 * FontScaller)).render(chord_prev2, True, (255, 255, 255))
+        surf_prev1 = pygame.font.Font(None, int(48 * FontScaller)).render(chord_prev1, True, (255, 255, 255))
+        surf_current = pygame.font.Font(None, int(72 * FontScaller)).render(chord_current, True, (255, 255, 0))
+        surf_next1 = pygame.font.Font(None, int(48 * FontScaller)).render(chord_next1, True, (255, 255, 255))
+        surf_next2 = pygame.font.Font(None, int(36 * FontScaller)).render(chord_next2, True, (255, 255, 255))
+        
+        screen.blit(surf_prev2, surf_prev2.get_rect(center=pos_prev2))
+        screen.blit(surf_prev1, surf_prev1.get_rect(center=pos_prev1))
+        screen.blit(surf_current, surf_current.get_rect(center=pos_current))
+        screen.blit(surf_next1, surf_next1.get_rect(center=pos_next1))
+        screen.blit(surf_next2, surf_next2.get_rect(center=pos_next2))
+
+        
+        time_area_rect = pygame.Rect(FILE_PANEL_WIDTH, SONG_TITLE_HEIGHT + CHORDS_HEIGHT, RIGHT_WIDTH, TIME_HEIGHT)
+        pygame.draw.rect(screen, (30, 30, 30), time_area_rect)
+        time_text = f"Time: {get_current_time():.2f}s   Speed: {current_speed:.1f}   Volume: {volume:.1f}   Transpose: {current_transposition}"
+        time_surf = pygame.font.Font(None, 28).render(time_text, True, (255, 255, 255))
+        screen.blit(time_surf, time_surf.get_rect(center=time_area_rect.center))
+        
+        for btn in row1_buttons:
+            btn.draw(screen)
+        for btn in row2_buttons:
+            btn.draw(screen)
+        
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            elif event.type == pygame.DROPFILE:
+                load_song(event.file)
+            elif event.type == pygame.MOUSEWHEEL:
+                scroll_offset += event.y * 20
+                scroll_offset = min(0, scroll_offset)
+                max_scroll = -max(0, (len(file_widgets) * 40) - file_list_area.height)
+                scroll_offset = max(max_scroll, scroll_offset)
+                last_scroll_time = pygame.time.get_ticks()
+                update_file_manager()
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                if event.button != 1:
+                    continue
+                if pygame.time.get_ticks() - last_scroll_time < 300:
+                    continue
+                pos = pygame.mouse.get_pos()
+                scrollbar_rect = pygame.Rect(FILE_PANEL_WIDTH - 10, file_list_area.top, 10, file_list_area.height)
+                if scrollbar_rect.collidepoint(pos):
+                    scrollbar_dragging = True
+                    drag_offset = pos[1] - scrollbar_rect.y
+                elif pos[0] < FILE_PANEL_WIDTH:
+                    for main_btn, del_btn in file_widgets:
+                        if main_btn.is_clicked(pos):
+                            main_btn.action()
+                        elif del_btn.is_clicked(pos):
+                            del_btn.action()
+                    if beat_toggle.is_clicked(pos):
+                        beat_toggle.action()
+                    if search_button.is_clicked(pos):
+                        search_button.action()
+                else:
+                    for btn in row1_buttons:
+                        if btn.is_clicked(pos):
+                            btn.action()
+                    for btn in row2_buttons:
+                        if btn.is_clicked(pos):
+                            btn.action()
+            elif event.type == pygame.MOUSEBUTTONUP:
+                scrollbar_dragging = False
+            elif event.type == pygame.MOUSEMOTION:
+                if 'scrollbar_dragging' in locals() and scrollbar_dragging:
+                    mouse_y = event.pos[1]
+                    new_thumb_y = mouse_y - drag_offset - file_list_area.top
+                    total_content_height = len(file_widgets) * 40
+                    if total_content_height > file_list_area.height:
+                        max_scroll = total_content_height - file_list_area.height
+                        new_scroll = - (new_thumb_y / (file_list_area.height - (file_list_area.height * file_list_area.height / total_content_height))) * max_scroll
+                        scroll_offset = int(new_scroll)
+                        scroll_offset = min(0, scroll_offset)
+                        scroll_offset = max(-max_scroll, scroll_offset)
+                        update_file_manager()
+        pygame.display.flip()
+        clock.tick(30)
+    
+    pygame.mixer.music.stop()
+    pygame.quit()
+
+def cleanup_temp_files():
+    for file in temp_speed_files:
+        if os.path.exists(file):
+            try:
+                os.remove(file)
+            except Exception as e:
+                print(f"Error cleaning {file}: {e}")
+    temp_transposed = os.path.join(tempfile.gettempdir(), "temp_transposed.wav")
+    if os.path.exists(temp_transposed):
+        try:
+            os.remove(temp_transposed)
+        except Exception as e:
+            print(f"Error cleaning temp_transposed.wav: {e}")
+
+if __name__ == "__main__":
+    try:
+        initial_file = None
+        chords = []
+        last_scroll_time = 0
+        player_mode_gui(chords, initial_file)
+    finally:
+        cleanup_temp_files()
